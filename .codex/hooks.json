@@ -1,0 +1,19 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .codex/hooks/check_iteration_names.py"
+          },
+          {
+            "type": "command",
+            "command": "python3 .codex/hooks/check_root_business_files.py"
+          }
+        ]
+      }
+    ]
+  }
+}

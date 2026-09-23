@@ -1,0 +1,6 @@
+interface:
+  display_name: "SDD Delivery"
+  short_description: "生成交付记录并安全 commit、push 已验证 Iteration"
+  default_prompt: "Use $sdd-delivery to deliver the verified Iteration I name."
+policy:
+  allow_implicit_invocation: false

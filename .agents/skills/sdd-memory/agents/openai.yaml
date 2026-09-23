@@ -1,0 +1,6 @@
+interface:
+  display_name: "SDD Memory"
+  short_description: "维护 SDD 跨 Session Context 与长期项目目录地图"
+  default_prompt: "Use $sdd-memory to reconcile the repository context and project map."
+policy:
+  allow_implicit_invocation: false

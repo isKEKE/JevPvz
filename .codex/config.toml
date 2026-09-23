@@ -1,0 +1,25 @@
+# Project-level Codex configuration
+# Keep exploration and implementation safe by default.
+
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+project_doc_max_bytes = 32768
+
+# Uncomment and replace with a model available in your Codex environment.
+# model = "gpt-5.5-codex"
+
+[features]
+hooks = true
+
+[profiles.read_only]
+approval_policy = "on-request"
+sandbox_mode = "read-only"
+
+[profiles.workspace]
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+# Use only for exceptional local tasks that require broad system access.
+[profiles.danger]
+approval_policy = "on-request"
+sandbox_mode = "danger-full-access"

@@ -1,0 +1,6 @@
+interface:
+  display_name: "SDD Plan"
+  short_description: "创建、修订并审批可追踪的 SDD Iteration Plan"
+  default_prompt: "Use $sdd-plan to create or revise an SDD Iteration Plan from our discussion."
+policy:
+  allow_implicit_invocation: false
