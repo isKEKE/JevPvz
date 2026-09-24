@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#183a2b">
+  <title>PvZ State 只读监视器</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-mark" aria-hidden="true">✿</div>
+    <div>
+      <p class="eyebrow">READ ONLY · LOCAL MONITOR</p>
+      <h1>草坪状态</h1>
+    </div>
+    <div class="connection-pill" id="connection-pill"><span class="status-dot"></span><span id="connection-label">等待采样</span></div>
+  </header>
+
+  <main>
+    <section class="summary-grid" aria-label="当前状态">
+      <article class="summary-card sun-card">
+        <div class="summary-icon">☀</div>
+        <div class="summary-content"><span class="summary-label">阳光</span><strong id="sun-value">—</strong><span id="sun-status" class="status-text">等待数据</span></div>
+      </article>
+      <article class="summary-card">
+        <div class="summary-icon plant-icon">♧</div>
+        <div class="summary-content"><span class="summary-label">植物</span><strong id="plant-count">—</strong><span>当前占用格</span></div>
+      </article>
+      <article class="summary-card">
+        <div class="summary-icon zombie-icon">♟</div>
+        <div class="summary-content"><span class="summary-label">僵尸</span><strong id="zombie-count">—</strong><span>当前观测到</span></div>
+      </article>
+      <article class="summary-card">
+        <div class="summary-icon item-icon">◈</div>
+            <div class="summary-content"><span class="summary-label">掉落物</span><strong id="item-count">—</strong><span>类型映射待核验</span></div>
+      </article>
+      <article class="summary-card freshness-card">
+        <div class="summary-icon clock-icon">◷</div>
+        <div class="summary-content"><span class="summary-label">最近采样</span><strong id="sample-time">等待采样</strong><span id="sample-age">每次只显示实测位置</span></div>
+      </article>
+    </section>
+
+    <section class="content-grid">
+      <div class="main-column">
+        <section class="panel cards-panel">
+          <div class="section-heading">
+            <div><p class="eyebrow">SEED BANK</p><h2>卡牌槽</h2></div>
+            <span id="cards-status" class="state-badge unavailable">未获取</span>
+          </div>
+          <div id="cards-list" class="cards-list"><p class="empty-message">等待卡槽采样</p></div>
+          <p class="panel-note">卡牌名称和费用来自 1.0.0.1051 静态植物表；卡牌类型与冷却计数仍待动态核验。</p>
+        </section>
+
+        <section class="panel lawn-panel">
+          <div class="section-heading lawn-heading">
+            <div><p class="eyebrow">BOARD · 5 ROWS × 9 COLUMNS</p><h2>草坪</h2></div>
+            <div class="legend">
+              <span><i class="legend-plant"></i>植物占用</span>
+              <span><i class="legend-empty"></i>空格</span>
+              <span><i class="legend-unknown"></i>可种状态未知</span>
+            </div>
+          </div>
+          <div id="board" class="board" aria-label="五行九列草坪"></div>
+          <div id="overlay-status" class="overlay-status">僵尸位置覆盖层未校准；右侧保留原始行与 X/Y。</div>
+        </section>
+
+        <section class="panel details-panel">
+          <div class="section-heading"><div><p class="eyebrow">OBSERVATION</p><h2>掉落物与游戏进度</h2></div></div>
+          <div class="details-grid">
+            <div><h3>掉落物</h3><div id="items-list" class="detail-list"><p class="empty-message">等待采样</p></div></div>
+            <div><h3>阶段与进度</h3><div id="game-details" class="detail-list"><p class="empty-message">尚未读取</p></div></div>
+          </div>
+        </section>
+      </div>
+
+      <aside class="side-column">
+        <section class="panel zombie-panel">
+          <div class="section-heading"><div><p class="eyebrow">LANE THREATS</p><h2>僵尸详情</h2></div><span id="zombies-status" class="state-badge unavailable">未获取</span></div>
+          <div id="lane-list" class="lane-list"><p class="empty-message">等待僵尸采样</p></div>
+          <p class="panel-note">僵尸名称由类型 ID 映射；HP 与游戏坐标按原始值显示。</p>
+        </section>
+
+        <section class="panel missing-panel">
+          <div class="section-heading"><div><p class="eyebrow">FIELD COVERAGE</p><h2>字段状态</h2></div></div>
+          <div id="missing-list" class="coverage-list"><p class="empty-message">等待状态记录</p></div>
+        </section>
+
+        <section class="panel sample-panel">
+          <div class="section-heading"><div><p class="eyebrow">SAMPLE HEALTH</p><h2>采样诊断</h2></div></div>
+          <div id="sample-diagnostics" class="detail-list"><p class="empty-message">等待采样</p></div>
+        </section>
+      </aside>
+    </section>
+
+    <details class="raw-panel">
+      <summary>查看原始 JSON</summary>
+      <pre id="raw-json">等待采样…</pre>
+    </details>
+  </main>
+  <footer>只读监视器 · 仅连接本机目标进程 · 不执行游戏操作</footer>
+</body>
+</html>
