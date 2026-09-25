@@ -244,7 +244,14 @@ def read_seed_bank(memory: MemoryReader, board_address: int) -> dict[str, Any]:
             "usable_flag",
         ):
             offset = int(layout[name])
-            value = memory.read_u32(address + offset)
+            # The usable flag candidate is byte-sized. Reading four bytes
+            # included adjacent fields and made a true 1 appear as values such
+            # as 0x03030001.
+            value = (
+                memory.read_bytes(address + offset, 1)[0]
+                if name == "usable_flag"
+                else memory.read_u32(address + offset)
+            )
             fields[name] = _observed_field(value)
         slots.append({"index": index, "address": _hex(address), "fields": fields})
 

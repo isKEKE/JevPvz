@@ -100,3 +100,30 @@ CANDIDATE_OFFSETS = {
         "large_sun_type_candidate": 6,
     },
 }
+
+# The only supported action layout is the standard 800x600 client area for the
+# fixed PvZ profile. Coordinates are client points delivered through the live
+# target HWND on every click.
+# V01 remains the required real-game confirmation of this profile.
+ACTION_WINDOW_PROFILE = {
+    "client_size": (800, 600),
+    "dpi": 96,
+    "card_slots": {
+        "count": 10,
+        "first_center": (112.0, 40.0),
+        "horizontal_spacing": 51.1,
+    },
+    "lawn": {
+        "rows": 5,
+        "cols": 9,
+        "first_cell_center": (80.0, 130.0),
+        "horizontal_spacing": 80.0,
+        "vertical_spacing": 100.0,
+    },
+    "shovel_center": (659.0, 40.0),
+    "item_coordinates": {
+        "interpretations": ("i32_pixel_candidate", "f32_pixel_candidate"),
+        "origin": (0.0, 0.0),
+        "bounds": (80.0, 80.0, 800.0, 600.0),
+    },
+}

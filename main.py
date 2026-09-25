@@ -7,6 +7,7 @@ import json
 import sys
 import time
 
+from actions import ActionExecutor
 from configs.pvz_1051 import TARGET_IDENTITY
 from game.reader import read_raw_snapshot
 from runtime.memory import ReadOnlyMemory
@@ -65,8 +66,29 @@ def run_serve(*, port: int, interval_ms: int) -> int:
     return 0
 
 
+def run_action(*, action_json: str | None) -> int:
+    """Execute one semantic JSON request and print exactly one JSON result."""
+    executor = ActionExecutor()
+    if action_json is None:
+        result = executor.rejected_request(None, "--action-json is required for the action command.")
+    else:
+        try:
+            request = json.loads(action_json)
+        except json.JSONDecodeError as exc:
+            result = executor.rejected_request(
+                action_json,
+                f"--action-json must contain valid JSON (line {exc.lineno}, column {exc.colno}).",
+            )
+        else:
+            result = executor.execute(request)
+    print(json.dumps(result.to_dict(), ensure_ascii=False, separators=(",", ":"), allow_nan=False), flush=True)
+    return {"success": 0, "rejected": 2, "unverified": 3}[result.status]
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Read PvZ 1.0.0.1051 memory without writing to it.")
+    parser = argparse.ArgumentParser(
+        description="Inspect PvZ 1.0.0.1051 state and run guarded semantic UI actions."
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("probe", help="check target identity and print one raw sample")
     snapshot = subparsers.add_parser("snapshot", help="print normalized State as JSON")
@@ -75,6 +97,8 @@ def build_parser() -> argparse.ArgumentParser:
     serve = subparsers.add_parser("serve", help="start the localhost-only browser dashboard")
     serve.add_argument("--port", type=int, default=8765)
     serve.add_argument("--interval-ms", type=int, default=200, help="background sampling interval (minimum 50 ms)")
+    action = subparsers.add_parser("action", help="execute one guarded semantic UI action")
+    action.add_argument("--action-json", help="one JSON request with an action and semantic parameters")
     return parser
 
 
@@ -86,6 +110,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_snapshot(once=arguments.once, interval_ms=arguments.interval_ms)
     if arguments.command == "serve":
         return run_serve(port=arguments.port, interval_ms=arguments.interval_ms)
+    if arguments.command == "action":
+        return run_action(action_json=arguments.action_json)
     return 2
 
 

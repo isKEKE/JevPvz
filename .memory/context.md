@@ -2,25 +2,27 @@
 
 ## Current Focus
 
-001 和 002 均 Verify Passed；两次迭代共享未跟踪源码，按用户同时交付请求准备联合本地提交，Git remote 尚未配置。
+003-action-executor 已 Verify Passed，正在执行用户显式要求的 Delivery。Delivery 报告准备后，将只提交本 Iteration 实现、SDD 记录和相关 memory；当前分支 main 未配置 Git remote。
 
 ## Active Iteration
 
-`001-memory-state-reader` — Verify Passed（当前本地用途；严格联证和真实恢复现场为后续项），Delivery 文件已准备。`002-progress-and-zombie-health` — Verify Passed，Delivery 文件已准备。两者待联合本地提交；尚无 remote 可推送。
+003-action-executor — Delivery in progress；P01 Approved、T1 complete、最新 Verify Passed。V01 实机记录为 45/45、铲除至 0/45、两种 item ID 消失且阳光 +50。用户仅为本次交付接受完整 direct-run 未记录 foreground HWND/PID 的证据缺口；不改变后续基线。代码、文档、Plan、Verify 与 Delivery 将纳入受限提交范围。
 
 ## Open Decisions and Blockers
 
-- Delivery push：当前分支 `main` 没有 remote/upstream；本地提交后须配置远程地址才能推送。不要把 `.codex/config.toml` 或 `.sdd/.sdd-001-002.zip` 纳入联合提交。
+- Push blocker: 当前 git remote -v 为空。完成本地 commit 后尝试 push；若失败，需用户配置 remote 后用普通 push 重试。
 
 ## Recent Activity
 
-- 2026-09-24 — delivery: 为两个 Passed 迭代准备独立交付报告和联合提交范围，共用源码按联合基线处理；证据见两份 `delivery.md`、Git status。
-- 2026-09-24 — verify: 001 按用户明确批准的当前本地用途修订范围独立复核为 Passed，严格同帧、事件时间线和真实恢复场景仍未验证；证据见 001 `plan-index.md`、P04、`verify.md`。
-- 2026-09-24 — verify: 用户再次明确接受 001 的部分结果供当前目标使用；fresh-context Luna 复核仍为 Blocked，未重跑测试；证据见 `.sdd/001-memory-state-reader/verify.md`。
-- 2026-09-24 — delivery: 检查 001/002 交付门槛；001 因 Verify Blocked 停止，002 因共享未跟踪源码和无 remote 暂停于 stage/commit 前；证据见两份 `verify.md`、Git status/remote。
-- 2026-09-24 — verify: 修订后的 001/P04 获用户明确批准，独立 Luna 重验将空闲端口服务与页面刷新记为通过、整体 001 记为 Blocked；证据见 `.sdd/001-memory-state-reader/verify.md`。
-- 2026-09-24 — plan: 依用户要求将 001/P04 的端口占用检测与提示排除于本地验证范围，保留空闲端口正常服务验收，修订方案随后获明确批准；证据见 `plan-index.md`、`plans/04-live-dashboard.md`。
+- 2026-09-25 — verify: fresh-context Verify 更新为 Passed；记录 34/34 tests、45/45、0/45、两个 item ID 及 sun +50；foreground HWND 缺口按用户明确裁定仅对当前交付接受。
+- 2026-09-25 — direct: 用户要求勾选 P01/T1 并设为 Pass；补齐 Implementation backfill，记录 cooldown gate 移除、三项实机结果、初始 stale readiness 响应处理及测试。
+- 2026-09-25 — direct: 三个临时 PowerShell 脚本执行完种植、铲除、收集；最终 snapshot 为 0/45、sun 1900，存在一个候选 item。
+- 2026-09-25 — plan: 用户批准 003/P01 最新基线，OD-06 Option A 收集上限 120 秒。
+- 2026-09-24 — verify: 旧基线 Verify 为 Blocked，已由 2026-09-25 两次更新报告取代。
+- 2026-09-24 — implementation: 修正 README 前台/失焦限制说明；34 个 unittest 通过。
+- 2026-09-24 — direct: 后台输入坐标校准至 x=80 后，卡槽 1 在 (0,0) 获 State-confirmed success。
+- 2026-09-24 — delivery: 001/002 以提交 2f21a5a 联合本地提交；push 因无 remote 失败。
 
 ## Next Action
 
-对联合 001/002 文件清单做 stage 审核后本地提交；尝试普通 push，若因无 remote 失败则记录本地 commit 与配置 remote 后的重试条件。
+写入 003 delivery.md，核对并只暂存 003 范围文件，本地 commit；随后尝试普通 push，并记录 remote 状态。
