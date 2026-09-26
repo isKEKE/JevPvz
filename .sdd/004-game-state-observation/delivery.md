@@ -9,10 +9,11 @@
 - Planned commit subject: `sdd(004): feat game state observation`
 - Primary commit: `8cdc3b821544c2b76fa3a0309c9ac62e1c800306`
 - Push: `origin/main` succeeded.
+- Supplemental evidence commit subject: `sdd(004): docs add P04 evidence snapshots`
 
 ## 2. Summary
 
-交付 004 的 State 契约与双 profile、实时 State 页面、草坪 Dashboard、受限证据采集工具及经用户裁定后的验收范围。标准 Hard Survival 卡槽费用、冷却和可选状态由 State/UI 一致呈现；P01–P05 Task 均已完成。
+交付 004 的 State 契约与双 profile、实时 State 页面、草坪 Dashboard、受限证据采集工具、P04 历史截图/State 证据包及经用户裁定后的验收范围。标准 Hard Survival 卡槽费用、冷却和可选状态由 State/UI 一致呈现；P01–P05 Task 均已完成。
 
 ## 3. What Changed
 
@@ -21,6 +22,7 @@
 - 增加 `/state` JEV/All State 页面、可折叠 JSON 树和同标签页导航；重整草坪 Dashboard，并按校准格距显示僵尸所在列。
 - Dashboard 卡槽按 State 的 availability 显示费用状态，直接显示 `cooldown_ready` 和 `usable`，不再把已知值标成候选或展示原始计数作为冷却结论。
 - 增加本机实机证据采集工具和确定性边界测试。
+- 按用户追加要求纳入 5 组 P04 `current` 场景 JSON/PNG 采集包（2026-09-25）；它们作为历史证据保存，不作为本次 Verify 的新检查结果。
 - 保留用户指定的 P05 JEV 字段边界/JSON 树改动；保留 `.sdd/005` 取消记录。
 
 ## 4. Plan and Task Status
@@ -38,7 +40,7 @@
 - State/runtime: `configs/item_catalog.py`, `configs/plant_catalog.py`, `configs/pvz_1051.py`, `configs/zombie_catalog.py`, `game/reader.py`, `main.py`, `state/builder.py`, `state/projection.py`, `dashboard/server.py`。
 - UI: `dashboard/static/app.js`, `dashboard/static/index.html`, `dashboard/static/style.css`, `dashboard/static/state.html`, `dashboard/static/state-page.js`。
 - Tests and usage: `tests/test_reader.py`, `tests/test_state.py`, `tests/test_web.py`, `tests/capture_live_validation.py`, `tests/test_live_validation.py`, `README.md`。
-- Docs and SDD: `docs/architecture.md`, `docs/memory-map.md`, `.sdd/004-game-state-observation/plan-index.md`, `plans/01-state-contract.md`–`plans/05-jev-state-presentation.md`, `verify.md`, `delivery.md`, `.sdd/005-jev-state-projection/plan-index.md` (cancelled-number record), `.memory/context.md`, `.memory/project-map.md`。
+- Docs and SDD: `docs/architecture.md`, `docs/memory-map.md`, `.sdd/004-game-state-observation/plan-index.md`, `plans/01-state-contract.md`–`plans/05-jev-state-presentation.md`, `verify.md`, `delivery.md`, `evidence/pvz-live-20260925-*.json/.png` (5 pairs), `.sdd/005-jev-state-projection/plan-index.md` (cancelled-number record), `.memory/context.md`, `.memory/project-map.md`。
 
 ## 6. Verification Result
 
@@ -59,6 +61,7 @@
 - G2 尚未执行：V07 真实浏览器断连、V12 精确 1672×941 视口、V15 实机种植动作、V29 大型 All State 树渲染性能；用户已接受这些项目不阻塞本次交付。
 - G3 暂缓：Endless upgrade price event、实机 sun collection threshold 和 V04 预测/策略字段。
 - 非日间标准布局的 plantability/distance 仍保持 unavailable；不推导通用种植合法性。
+- Included P04 evidence bundles are historical `current` snapshots from 2026-09-25; their JSON retains target PID metadata but has no `raw_snapshot` property, memory-address keys, or credential-like fields. They are not used to claim current gameplay validation.
 
 ## 9. Follow-up Items
 
@@ -66,7 +69,7 @@
 
 ## 10. Git Scope
 
-- Files intended for this Iteration commit: the State/runtime, UI, tests, README/docs, P01–P05 Plans, `verify.md`, this Delivery report, the 005 cancellation-number record, and the two SDD memory files listed in Section 5.
-- Unrelated working-tree files explicitly excluded: edits under `.agents/skills/`, untracked `.agents/skills/direct-task/` and `.agents/skills/sdd-agents/`, `.codex/config.toml`, `AGENTS.md`, `.env`, and historical unreviewed bundles under `.sdd/004-game-state-observation/evidence/`.
+- Files intended for this Iteration commit: the State/runtime, UI, tests, README/docs, P01–P05 Plans, `verify.md`, this Delivery report, the 005 cancellation-number record, P04 evidence bundles, and the two SDD memory files listed in Section 5.
+- Unrelated working-tree files explicitly excluded: edits under `.agents/skills/`, untracked `.agents/skills/direct-task/` and `.agents/skills/sdd-agents/`, `.codex/config.toml`, `AGENTS.md`, and `.env`.
 - Remote / branch intended for push: `origin/main`。
 - Primary commit: `8cdc3b821544c2b76fa3a0309c9ac62e1c800306` (`sdd(004): feat game state observation`); pushed by ordinary fast-forward.

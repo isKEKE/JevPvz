@@ -97,9 +97,10 @@ flowchart LR
 
 ### 5.2 Confirmed Decision
 
-用户明确选择后，将对应 Decision 从 `5.1 Open Decision` 移入这里，并记录来源、日期和理由。
+每项已确认决策单独记录，可重复以下记录。用户明确选择后，将对应 Decision 从
+`5.1 Open Decision` 移入这里，并记录来源、日期和理由。
 
-#### Confirmed Decision Record
+#### Confirmed Decision Record — <decision ID>
 
 - Decision ID: None yet
 - Confirmed choice: Pending Human Review

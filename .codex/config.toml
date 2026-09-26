@@ -1,7 +1,7 @@
 # Project-level Codex configuration
 # Keep exploration and implementation safe by default.
 
-approval_policy = "on-request"
+approval_policy = "never"
 sandbox_mode = "workspace-write"
 project_doc_max_bytes = 32768
 
