@@ -7,6 +7,8 @@
 - Branch: `main`
 - Commit type: `feat`
 - Planned commit subject: `sdd(004): feat game state observation`
+- Primary commit: `8cdc3b821544c2b76fa3a0309c9ac62e1c800306`
+- Push: `origin/main` succeeded.
 
 ## 2. Summary
 
@@ -67,3 +69,4 @@
 - Files intended for this Iteration commit: the State/runtime, UI, tests, README/docs, P01–P05 Plans, `verify.md`, this Delivery report, the 005 cancellation-number record, and the two SDD memory files listed in Section 5.
 - Unrelated working-tree files explicitly excluded: edits under `.agents/skills/`, untracked `.agents/skills/direct-task/` and `.agents/skills/sdd-agents/`, `.codex/config.toml`, `AGENTS.md`, `.env`, and historical unreviewed bundles under `.sdd/004-game-state-observation/evidence/`.
 - Remote / branch intended for push: `origin/main`。
+- Primary commit: `8cdc3b821544c2b76fa3a0309c9ac62e1c800306` (`sdd(004): feat game state observation`); pushed by ordinary fast-forward.
