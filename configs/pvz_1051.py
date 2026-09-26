@@ -99,6 +99,23 @@ CANDIDATE_OFFSETS = {
         "small_sun_type_candidate": 5,
         "large_sun_type_candidate": 6,
     },
+    "plant_definition": {
+        "table_rva": 0x0029F2B0,
+        "stride": 0x24,
+        "type": 0x00,
+        "cost": 0x10,
+    },
+}
+
+# Human-calibrated standard daytime lawn: house line X=0, first column boundary
+# X=50, and 80px between columns. Grid distance is the zero-based column index.
+LAWN_GEOMETRY: dict[str, dict[str, float]] = {
+    "day": {
+        "house_x": 0.0,
+        "grid_first_boundary_x": 50.0,
+        "grid_cell_width_px": 80.0,
+        "grid_columns": 9,
+    },
 }
 
 # The only supported action layout is the standard 800x600 client area for the

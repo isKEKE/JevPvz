@@ -1,7 +1,12 @@
 import unittest
+import json
+from contextlib import redirect_stdout
+from io import StringIO
+from unittest.mock import patch
 
 from state.builder import build_state, capture_state
 from state.schema import to_json_record
+from state.projection import project_jev_state
 from runtime.process import TargetNotRunningError
 
 
@@ -44,11 +49,174 @@ def sample(*, plants=None, zombies=None, items=None):
                 }
             },
             "terrain": {"status": "candidate", "raw_hex": "00" * 54},
+            "plant_definition_costs": {"status": "provisional", "entries": {
+                "35": {"type_code": 35, "cost": 75},
+                "5": {"type_code": 5, "cost": 175},
+            }},
         },
     }
 
 
 class StateBuilderTests(unittest.TestCase):
+
+    def test_snapshot_cli_selects_jev_and_keeps_all_as_default(self):
+        from main import build_parser, run_snapshot
+
+        self.assertEqual(build_parser().parse_args(["snapshot", "--once"]).profile, "all")
+        sample_record = to_json_record(build_state(sample()))
+        for profile, expected in (("all", sample_record), ("jev", project_jev_state(sample_record))):
+            stdout = StringIO()
+            with patch("main.capture_state", return_value=sample_record), redirect_stdout(stdout):
+                self.assertEqual(run_snapshot(once=True, interval_ms=200, profile=profile), 0)
+            self.assertEqual(json.loads(stdout.getvalue()), expected)
+
+    def test_jev_projection_is_an_explicit_compact_allowlist_and_preserves_unknowns(self):
+        all_state = to_json_record(build_state(sample(
+            plants=[{"type": 1, "row": 1, "column": 2}],
+            zombies=[{"type": 4, "row": 1, "x": 600.0, "y": 250.0, "hp": 270, "helmet_hp": 1100}],
+            items=[{"type": 4, "x": 321.0, "y": 222.0}],
+        )))
+        all_state["game"]["background"] = "day"
+        all_state["board"]["plantability"][0][0] = False
+        all_state["future_diagnostic"] = {"secret": "must not leak"}
+        jev = project_jev_state(all_state)
+
+        self.assertEqual(jev["sample_sequence"], all_state["sample_sequence"])
+        self.assertEqual(jev["observed_at_utc"], all_state["observed_at_utc"])
+        self.assertEqual(jev["board"]["cells"][1][2], "plant:sunflower")
+        self.assertIsNone(jev["board"]["cells"][0][1])
+        self.assertIs(jev["board"]["cells"][0][0], False)
+        self.assertEqual(set(jev["board"]), {"rows", "cols", "cells"})
+        self.assertIn("terrain", all_state["board"])
+        self.assertIn("plantability", all_state["board"])
+        self.assertEqual(jev["plants"], [{"type_code": 1, "type_name": "sunflower", "row": 1, "col": 2}])
+        self.assertEqual(jev["zombies"][0]["hp"], jev["zombies"][0]["body_hp"])
+        self.assertEqual(jev["zombies"][0]["distance_to_house_px"], all_state["zombies"][0]["distance_to_house_px"])
+        self.assertEqual(jev["zombies"][0]["distance_to_house_cells"], all_state["zombies"][0]["distance_to_house_cells"])
+        self.assertNotIn("nearest_zombie_distance_to_house_px", jev["zombies"][0])
+        self.assertNotIn("nearest_zombie_distance_to_house_cells", jev["zombies"][0])
+        self.assertEqual([card["cooldown_ready"] for card in jev["cards"]], [True, False])
+        self.assertEqual([card["usable"] for card in jev["cards"]], [False, False])
+        self.assertNotIn("availability", jev)
+        self.assertIn("availability", all_state)
+        self.assertEqual(all_state["availability"]["cards.cooldown_ready"], "available")
+        self.assertEqual(jev["items"][0], {"type_code": 4, "type_name": "sun", "x": 321.0, "y": 222.0})
+        self.assertNotIn("collectible_suns", jev)
+        self.assertIn("collectible_suns", all_state)
+        self.assertIn("nearest_zombie_distance_to_house_px", all_state["lanes"][1])
+        self.assertIn("nearest_zombie_distance_to_house_cells", all_state["lanes"][1])
+        self.assertEqual(jev["lanes"][1]["row"], 1)
+        self.assertEqual(jev["lanes"][1]["zombie_count"], 1)
+        for lane in jev["lanes"]:
+            self.assertNotIn("nearest_zombie_distance_to_house_px", lane)
+            self.assertIn("nearest_zombie_distance_to_house_cells", lane)
+        self.assertNotIn("source", jev)
+        self.assertNotIn("raw_snapshot", jev)
+        self.assertNotIn("evidence", jev)
+        self.assertNotIn("errors", jev)
+        self.assertNotIn("future_diagnostic", jev)
+        self.assertNotIn("id", jev["zombies"][0])
+        self.assertNotIn("total_hp", jev["zombies"][0])
+
+    def test_jev_projection_keeps_all_state_input_unchanged(self):
+        import copy
+        all_state = to_json_record(build_state(sample()))
+        before = copy.deepcopy(all_state)
+        project_jev_state(all_state)
+        self.assertEqual(all_state, before)
+
+    def test_jev_board_occupancy_stays_null_when_unobserved_and_keeps_observed_empty_grid(self):
+        import copy
+        all_state = to_json_record(build_state(sample()))
+        all_state["game"]["background"] = "day"
+
+        absent = copy.deepcopy(all_state)
+        absent["board"].pop("cells")
+        absent["availability"].pop("board.occupancy")
+        absent_jev = project_jev_state(absent)
+        self.assertIsNone(absent_jev["board"]["cells"])
+        self.assertNotIn("availability", absent_jev)
+
+        invalid = copy.deepcopy(all_state)
+        invalid["board"]["cells"] = [[None] * 9]
+        invalid["availability"]["board.occupancy"] = "error"
+        invalid_jev = project_jev_state(invalid)
+        self.assertIsNone(invalid_jev["board"]["cells"])
+        self.assertNotIn("availability", invalid_jev)
+
+        empty = copy.deepcopy(all_state)
+        empty["board"]["cells"] = [[None] * 9 for _ in range(5)]
+        empty["availability"]["board.occupancy"] = "provisional"
+        empty_jev = project_jev_state(empty)
+        self.assertEqual(empty_jev["board"]["cells"], [[None] * 9 for _ in range(5)])
+        self.assertEqual(set(empty_jev["board"]), {"rows", "cols", "cells"})
+        self.assertNotIn("availability", empty_jev)
+
+        nonplantable = copy.deepcopy(empty)
+        nonplantable["board"]["plantability"][2][4] = False
+        nonplantable_jev = project_jev_state(nonplantable)
+        self.assertIs(nonplantable_jev["board"]["cells"][2][4], False)
+
+        unsupported = copy.deepcopy(empty)
+        unsupported["game"]["background"] = "pool"
+        unsupported_jev = project_jev_state(unsupported)
+        self.assertIsNone(unsupported_jev["board"]["cells"])
+
+    def test_card_cost_uses_adventure_base_and_endless_upgrade_plant_count(self):
+        raw = sample(plants=[
+            {"slot": 0, "object_id": 101, "type": 40, "row": 0, "column": 0},
+            {"slot": 1, "object_id": 102, "type": 40, "row": 1, "column": 0},
+            {"slot": 2, "object_id": 103, "type": 0, "row": 2, "column": 0},
+        ])
+        raw["candidates"]["seed_bank"]["slots"] = [
+            {"index": 0, "fields": {"slot_type": {"value": 40}, "imitator_type": {"value": 0}}},
+            {"index": 1, "fields": {"slot_type": {"value": 0}, "imitator_type": {"value": 0}}},
+        ]
+        raw["candidates"]["seed_bank"]["slot_count"] = {"value": 2}
+        raw["candidates"]["plant_definition_costs"]["entries"].update({
+            "40": {"type_code": 40, "cost": 250},
+            "0": {"type_code": 0, "cost": 100},
+        })
+        raw["candidates"]["game_progress"]["raw_candidate_fields"]["mode"] = {"value": 11}
+
+        endless = to_json_record(build_state(raw))
+
+        self.assertEqual([card["cost"] for card in endless["cards"]], [350, 100])
+        self.assertEqual(endless["availability"]["cards.cost"], "provisional")
+        self.assertIn("Endless price event not confirmed", endless["evidence"]["cards.cost"])
+        self.assertFalse(any(key.startswith("affordable") for card in endless["cards"] for key in card))
+        self.assertIsNone(endless["cards"][0]["cooldown_ready"])
+        self.assertEqual(endless["availability"]["cards.cooldown_ready"], "unavailable")
+
+        raw["candidates"]["game_progress"]["raw_candidate_fields"]["mode"] = {"value": 6}
+        hard_survival = to_json_record(build_state(raw))
+        self.assertEqual(hard_survival["cards"][0]["cost"], 250)
+        self.assertEqual(hard_survival["availability"]["cards.cost"], "available")
+
+        raw["candidates"]["game_progress"]["raw_candidate_fields"]["mode"] = {"value": 0}
+        adventure = to_json_record(build_state(raw))
+        self.assertEqual(adventure["cards"][0]["cost"], 250)
+
+    def test_initial_ready_and_cooling_cards_get_boolean_readiness_at_counter_boundaries(self):
+        raw = sample()
+        progress = raw["candidates"]["game_progress"]["raw_candidate_fields"]
+        progress.update({
+            "scene": {"value": 3},
+            "pause_flag": {"value": 0},
+            "won_flag": {"value": 0},
+        })
+        raw["candidates"]["seed_bank"]["slots"] = [
+            {"index": 0, "fields": {"slot_type": {"value": 35}, "imitator_type": {"value": 0}, "cooldown_progress": {"value": 300}, "cooldown_total": {"value": 300}, "usable_flag": {"value": 1}}},
+            {"index": 1, "fields": {"slot_type": {"value": 5}, "imitator_type": {"value": 0}, "cooldown_progress": {"value": 300}, "cooldown_total": {"value": 300}, "usable_flag": {"value": 0}}},
+        ]
+
+        record = to_json_record(build_state(raw))
+
+        self.assertEqual([card["cooldown_ready"] for card in record["cards"]], [True, False])
+        self.assertEqual([card["usable"] for card in record["cards"]], [True, False])
+        self.assertEqual(record["availability"]["cards.cooldown_ready"], "available")
+        self.assertEqual(record["availability"]["cards.usable"], "available")
+
     def test_builds_5_by_9_occupancy_and_lane_counts_from_observed_entities(self):
         raw = sample(
             plants=[
@@ -70,19 +238,29 @@ class StateBuilderTests(unittest.TestCase):
         self.assertEqual(record["board"]["cells"][0][0], None)
         self.assertEqual(record["availability"]["plants"], "provisional")
         self.assertEqual([lane["zombie_count"] for lane in record["lanes"]], [0, 0, 2, 0, 0])
+        self.assertTrue(all(zombie["distance_to_house_px"] is None for zombie in record["zombies"]))
+        self.assertTrue(all(zombie["distance_to_house_cells"] is None for zombie in record["zombies"]))
+        self.assertTrue(all("progress_to_house" not in zombie for zombie in record["zombies"]))
+        self.assertEqual(record["availability"]["zombies.distance_to_house_px"], "unavailable")
+        self.assertEqual(record["availability"]["zombies.distance_to_house_cells"], "unavailable")
+        self.assertIsNone(record["lanes"][2]["nearest_zombie_distance_to_house_px"])
+        self.assertIsNone(record["lanes"][2]["nearest_zombie_distance_to_house_cells"])
         self.assertEqual((record["zombies"][0]["x"], record["zombies"][0]["y"], record["zombies"][0]["hp"]), (687.0, 250.0, 270))
-        self.assertEqual(record["items"][0]["type_name"], "阳光")
+        self.assertEqual(record["items"][0]["type_name"], "sun")
         self.assertEqual(record["items"][0]["type_meaning"], "candidate")
         self.assertIsNone(record["collectible_suns"])
-        self.assertEqual(record["availability"]["cards.cost"], "provisional")
-        self.assertEqual(record["cards"][0]["type_name"], "咖啡豆")
+        self.assertEqual(record["availability"]["cards.cost"], "available")
+        self.assertEqual(record["cards"][0]["type_name"], "coffee_bean")
         self.assertEqual(record["cards"][0]["cost"], 75)
-        self.assertEqual(record["cards"][0]["cost_source"], "static_catalog")
-        self.assertEqual(record["cards"][1]["type_name"], "寒冰射手")
+        self.assertEqual(record["cards"][0]["cost_source"], "plant_definition_table_verified_with_gameplay")
+        self.assertEqual(record["cards"][1]["type_name"], "snow_pea")
         self.assertEqual(record["cards"][1]["cost"], 175)
-        self.assertEqual(record["board"]["cells"][0][3]["type_name"], "向日葵")
-        self.assertEqual(record["zombies"][0]["type_name"], "普通僵尸")
-        self.assertEqual(record["zombies"][1]["type_name"], "路障僵尸")
+        self.assertEqual(record["board"]["cells"][0][3]["type_name"], "sunflower")
+        self.assertEqual(record["zombies"][0]["type_name"], "normal_zombie")
+        self.assertEqual(record["zombies"][1]["type_name"], "conehead_zombie")
+        self.assertEqual(record["cards"][0]["cooldown_ready"], True)
+        self.assertEqual(record["cards"][1]["cooldown_ready"], False)
+        self.assertEqual(record["availability"]["cards.cooldown_ready"], "available")
         self.assertFalse(record["decision_ready"])
 
     def test_pumpkin_and_tall_nut_share_one_cell_without_erasing_the_lawn(self):
@@ -100,11 +278,11 @@ class StateBuilderTests(unittest.TestCase):
             self.assertTrue(record["valid"])
             self.assertEqual(record["availability"]["plants"], "provisional")
             self.assertEqual(len(record["plants"]), 2)
-            self.assertEqual(record["board"]["cells"][0][6]["type_name"], "高坚果")
+            self.assertEqual(record["board"]["cells"][0][6]["type_name"], "tall_nut")
             self.assertEqual(record["board"]["cells"][0][6]["plant_count"], 2)
             self.assertEqual(
                 [plant["type_name"] for plant in record["board"]["cells"][0][6]["plants"]],
-                ["高坚果", "南瓜头"],
+                ["tall_nut", "pumpkin"],
             )
             self.assertIsNone(record["board"]["cells"][0][0])
 
@@ -126,7 +304,7 @@ class StateBuilderTests(unittest.TestCase):
                 self.assertEqual(sum(len(cell["plants"]) for row in cells for cell in row if cell), 6)
                 self.assertEqual(sum(cell is not None for row in cells for cell in row), 3)
                 self.assertEqual([plant["type_code"] for plant in cells[2][4]["plants"]], [1, 30, 16])
-                self.assertEqual(cells[2][4]["type_name"], "向日葵")
+                self.assertEqual(cells[2][4]["type_name"], "sunflower")
                 self.assertEqual([plant["id"] for plant in cells[2][4]["plants"]], [105, 108, 103])
                 self.assertEqual([plant["type_code"] for plant in cells[1][2]["plants"]], [32, 33])
                 self.assertEqual(cells[0][0]["plant_count"], 1)
@@ -206,12 +384,12 @@ class StateBuilderTests(unittest.TestCase):
 
         record = to_json_record(build_state(raw))
 
-        self.assertEqual(record["game"]["scene"], "正在游玩")
-        self.assertEqual(record["game"]["phase"], "正在游玩")
+        self.assertEqual(record["game"]["scene"], "playing")
+        self.assertEqual(record["game"]["phase"], "playing")
         self.assertEqual(record["game"]["scene_code"], 3)
-        self.assertEqual(record["game"]["mode"], "冒险模式")
+        self.assertEqual(record["game"]["mode"], "adventure")
         self.assertEqual(record["game"]["mode_code"], 0)
-        self.assertEqual(record["game"]["background"], "泳池")
+        self.assertEqual(record["game"]["background"], "pool")
         self.assertEqual(record["game"]["level"], "1-5")
         self.assertEqual(record["game"]["level_number"], 5)
         self.assertEqual(record["game"]["spawned_waves"], 3)
@@ -246,8 +424,8 @@ class StateBuilderTests(unittest.TestCase):
 
         record = to_json_record(build_state(raw))
 
-        self.assertEqual(record["game"]["phase"], "主菜单")
-        self.assertEqual(record["game"]["mode"], "冒险模式")
+        self.assertEqual(record["game"]["phase"], "menu")
+        self.assertEqual(record["game"]["mode"], "adventure")
         self.assertIsNone(record["game"]["level"])
         self.assertIsNone(record["game"]["spawned_waves"])
         self.assertIsNone(record["game"]["paused"])
@@ -312,7 +490,7 @@ class StateBuilderTests(unittest.TestCase):
             {"type": 999, "x": 500.0, "y": 300.0},
         ])
         record = to_json_record(build_state(raw))
-        self.assertEqual(record["items"][0]["type_name"], "银币")
+        self.assertEqual(record["items"][0]["type_name"], "silver_coin")
         self.assertEqual(record["items"][0]["type_meaning"], "candidate")
         self.assertEqual(record["items"][1]["type_name"], "unknown")
         self.assertEqual(record["items"][1]["type_meaning"], "unknown")

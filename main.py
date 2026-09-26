@@ -18,6 +18,7 @@ from runtime.process import (
     verify_target_identity,
 )
 from state.builder import capture_state
+from state.projection import project_jev_state
 from dashboard.server import serve_dashboard
 
 
@@ -40,14 +41,16 @@ def run_probe() -> int:
     return 0
 
 
-def run_snapshot(*, once: bool, interval_ms: int) -> int:
+def run_snapshot(*, once: bool, interval_ms: int, profile: str = "all") -> int:
     """Print one State record or a newline-delimited stream of records."""
     if interval_ms < 50:
         print("snapshot failed: --interval-ms must be at least 50", file=sys.stderr)
         return 2
     try:
         while True:
-            print(json.dumps(capture_state(), ensure_ascii=False, separators=(",", ":")), flush=True)
+            sample = capture_state()
+            result = project_jev_state(sample) if profile == "jev" else sample
+            print(json.dumps(result, ensure_ascii=False, separators=(",", ":")), flush=True)
             if once:
                 return 0
             time.sleep(interval_ms / 1000)
@@ -94,6 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
     snapshot = subparsers.add_parser("snapshot", help="print normalized State as JSON")
     snapshot.add_argument("--once", action="store_true", help="capture exactly one State record")
     snapshot.add_argument("--interval-ms", type=int, default=200, help="stream interval (minimum 50 ms)")
+    snapshot.add_argument("--profile", choices=("all", "jev"), default="all", help="JSON profile (default: all)")
     serve = subparsers.add_parser("serve", help="start the localhost-only browser dashboard")
     serve.add_argument("--port", type=int, default=8765)
     serve.add_argument("--interval-ms", type=int, default=200, help="background sampling interval (minimum 50 ms)")
@@ -107,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
     if arguments.command == "probe":
         return run_probe()
     if arguments.command == "snapshot":
-        return run_snapshot(once=arguments.once, interval_ms=arguments.interval_ms)
+        return run_snapshot(once=arguments.once, interval_ms=arguments.interval_ms, profile=arguments.profile)
     if arguments.command == "serve":
         return run_serve(port=arguments.port, interval_ms=arguments.interval_ms)
     if arguments.command == "action":

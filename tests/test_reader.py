@@ -3,7 +3,7 @@ import unittest
 
 from configs.pvz_1051 import ARRAY_HEADER_OFFSETS, FIELD_OFFSETS
 from game.arrays import ArrayFormatError, inspect_array_header, iter_live_slots
-from game.reader import read_game_progress, read_items, read_plants, read_raw_snapshot, read_zombies
+from game.reader import read_game_progress, read_items, read_plant_definition_cost, read_plants, read_raw_snapshot, read_zombies
 from runtime.memory import ShortReadError, read_u32
 
 
@@ -136,6 +136,20 @@ class SparseArrayTests(unittest.TestCase):
         self.assertEqual(zombie["helmet_hp"], 1100)
         self.assertEqual(zombie["shield_hp"], 0)
         self.assertEqual(zombie["balloon_hp"], 0)
+
+    def test_reads_plant_definition_cost_after_type_code_validation(self):
+        from configs.pvz_1051 import CANDIDATE_OFFSETS
+
+        module_base = 0x1000000
+        layout = CANDIDATE_OFFSETS["plant_definition"]
+        address = module_base + layout["table_rva"] + 1 * layout["stride"]
+        self.memory.put_u32(address + layout["type"], 1)
+        self.memory.put_u32(address + layout["cost"], 50)
+        self.assertEqual(read_plant_definition_cost(self.memory, module_base, 1), {"type_code": 1, "cost": 50})
+
+        self.memory.put_u32(address + layout["type"], 2)
+        with self.assertRaisesRegex(ValueError, "type mismatch"):
+            read_plant_definition_cost(self.memory, module_base, 1)
 
     def test_reads_cone_bucket_shield_balloon_and_unarmored_hp_separately(self):
         board = 0x300000

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from itertools import count
 from typing import Any, Callable, Mapping
 
-from configs.pvz_1051 import TARGET_IDENTITY
+from configs.pvz_1051 import LAWN_GEOMETRY, TARGET_IDENTITY
 from configs.plant_catalog import plant_info
 from configs.zombie_catalog import zombie_name
 from configs.item_catalog import item_name
@@ -26,35 +26,35 @@ from .schema import StateSnapshot
 _SEQUENCES = count(1)
 _ARRAY_NAMES = ("plants", "zombies", "items")
 
+# Plants that upgrade another plant and receive the Endless Survival surcharge.
+# The current price rule adds 50 sun for each live plant of the same type.
+_ENDLESS_UPGRADE_PLANT_CODES = frozenset({40, 41, 42, 43, 44, 46, 47})
+
 _SCENE_NAMES = {
-    0: "正在加载", 1: "主菜单", 2: "关卡介绍", 3: "正在游玩",
-    4: "僵尸获胜", 5: "关卡奖励", 6: "制作人员名单", 7: "挑战场景",
+    0: "loading", 1: "menu", 2: "level_intro", 3: "playing",
+    4: "zombies_win", 5: "level_award", 6: "credits", 7: "challenge",
 }
 _BACKGROUND_NAMES = {
-    0: "白天", 1: "夜晚", 2: "泳池", 3: "浓雾", 4: "屋顶",
-    5: "僵王战场", 6: "蘑菇花园", 7: "温室", 8: "僵尸水族馆", 9: "智慧树",
+    0: "day", 1: "night", 2: "pool", 3: "fog", 4: "roof",
+    5: "boss_arena", 6: "mushroom_garden", 7: "greenhouse", 8: "zombiquarium", 9: "tree_of_wisdom",
 }
 _MODE_NAMES = {
-    0: "冒险模式",
-    **{code: f"生存模式（普通，第 {code} 阶段）" for code in range(1, 6)},
-    **{code: f"生存模式（困难，第 {code - 5} 阶段）" for code in range(6, 11)},
-    **{code: f"生存模式（无尽，第 {code - 10} 阶段）" for code in range(11, 16)},
-    16: "小游戏：战争与豌豆", 17: "小游戏：坚果保龄球", 18: "小游戏：老虎机",
-    19: "小游戏：雨中播种", 20: "小游戏：宝石迷阵", 21: "小游戏：隐形僵尸",
-    22: "小游戏：观星", 23: "小游戏：僵尸水族馆", 24: "小游戏：宝石迷阵转转乐",
-    25: "小游戏：小鬼大麻烦", 26: "小游戏：传送门战斗", 27: "小游戏：列队",
-    28: "小游戏：雪橇僵尸大作战", 29: "小游戏：极速", 30: "小游戏：打僵尸",
-    31: "小游戏：最后一搏", 32: "小游戏：战争与豌豆（2）", 33: "小游戏：坚果保龄球（2）",
-    34: "小游戏：跳跳舞会", 35: "小游戏：最终 Boss", 36: "小游戏：美术坚果",
-    37: "小游戏：阳光日", 38: "小游戏：翻土", 39: "小游戏：大块头",
-    40: "小游戏：美术向日葵", 41: "小游戏：空袭", 42: "小游戏：冰冻",
-    43: "小游戏：禅境花园", 44: "小游戏：高重力", 45: "小游戏：墓地危机",
-    46: "小游戏：铲子", 47: "小游戏：暴风雨夜", 48: "小游戏：蹦极闪电战",
-    49: "小游戏：松鼠",
-    50: "智慧树",
-    **{code: f"砸罐子（第 {code - 50} 关）" for code in range(51, 61)},
-    **{code: f"我是僵尸（第 {code - 60} 关）" for code in range(61, 71)},
-    71: "促销模式", 72: "开场模式",
+    0: "adventure",
+    **{code: f"survival_normal_stage_{code}" for code in range(1, 6)},
+    **{code: f"survival_hard_stage_{code - 5}" for code in range(6, 11)},
+    **{code: f"survival_endless_stage_{code - 10}" for code in range(11, 16)},
+    **dict(enumerate(("war_and_peas", "wall_nut_bowling", "slot_machine", "it's_raining_seeds",
+        "beghouled", "invisighoul", "seeing_stars", "zombiquarium", "beghouled_twist",
+        "big_trouble_little_zombie", "portal_combat", "column_like_you_see", "bobsled_bonanza",
+        "speed", "whack_a_zombie", "last_stand", "war_and_peas_2", "wall_nut_bowling_2",
+        "pogo_party", "boss_rush", "art_challenge_wall_nut", "sunny_day", "grave_danger",
+        "heavy_rain", "big_time", "art_challenge_sunflower", "air_raid", "ice_level",
+        "zen_garden", "high_gravity", "graveyard", "shovel", "stormy_night",
+        "bungee_blitz", "squirrel").__iter__(), start=16)),
+    50: "tree_of_wisdom",
+    **{code: f"vasebreaker_stage_{code - 50}" for code in range(51, 61)},
+    **{code: f"i_zombie_stage_{code - 60}" for code in range(61, 71)},
+    71: "promotion", 72: "intro",
 }
 
 
@@ -84,6 +84,78 @@ def _status(raw_domain: Any) -> tuple[str, str]:
     return "unavailable", evidence
 
 
+def _current_card_cost(
+    base_cost: Any,
+    type_code: Any,
+    mode_code: Any,
+    plants: list[dict[str, Any]] | None,
+) -> int | None:
+    """Calculate prices for Adventure and standard Survival modes."""
+    if not _integer(base_cost) or base_cost < 0 or not _integer(type_code):
+        return None
+    if mode_code == 0 or mode_code in range(1, 11):  # Adventure and Normal/Hard Survival.
+        return base_cost
+    if mode_code not in range(11, 16):  # Endless Survival stages only.
+        return None
+    if type_code not in _ENDLESS_UPGRADE_PLANT_CODES:
+        return base_cost
+    if plants is None:
+        return None
+    matching_plants = sum(1 for plant in plants if plant.get("type_code") == type_code)
+    return base_cost + 50 * matching_plants
+
+
+def _cooldown_ready(progress: Any, total: Any, usable_flag: Any) -> bool | None:
+    """Use the dynamically verified SeedPacket usable byte for readiness.
+
+    The raw counters are useful diagnostics, but valid ready cards may be at
+    either counter boundary. Requiring progress==0 left initially ready cards
+    unknown even when the usable byte was set. Preserve unknown for malformed
+    counters or flags.
+    """
+    if not (_integer(progress) and _integer(total) and _integer(usable_flag)):
+        return None
+    if progress < 0 or total < 0 or progress > total or usable_flag not in (0, 1):
+        return None
+    return usable_flag == 1
+
+
+def _game_allows_card_use(
+    mode_code: Any,
+    scene_code: Any,
+    pause_flag: Any,
+    won_flag: Any,
+) -> bool | None:
+    """Return whether a supported live Survival/Adventure game can accept a card."""
+    if not _integer(mode_code) or mode_code not in range(16):
+        return None
+    if pause_flag == 1 or won_flag == 1:
+        return False
+    if pause_flag != 0 or won_flag != 0 or not _integer(scene_code):
+        return None
+    if scene_code == 3:
+        return True
+    if scene_code in range(8):
+        return False
+    return None
+
+
+def _card_usable(
+    cost: Any,
+    cooldown_ready: Any,
+    sun_balance: Any,
+    game_allows_use: Any,
+) -> bool | None:
+    """Combine slot readiness, price input, balance, and game phase."""
+    if game_allows_use is False or cooldown_ready is False:
+        return False
+    if game_allows_use is not True or cooldown_ready is not True:
+        return None
+    if not (_integer(cost) and cost >= 0 and _integer(sun_balance) and sun_balance >= 0):
+        return None
+    return sun_balance >= cost
+
+
 def _unavailable_record(message: str, *, sequence: int, status: str = "error") -> dict[str, Any]:
     availability = {
         "sun_balance": "error",
@@ -98,6 +170,12 @@ def _unavailable_record(message: str, *, sequence: int, status: str = "error") -
         "cards": "unavailable",
         "cards.cooldown": "unavailable",
         "cards.cost": "unavailable",
+        "cards.cooldown_ready": "unavailable",
+        "cards.usable": "unavailable",
+        "zombies.distance_to_house_px": "unavailable",
+        "zombies.distance_to_house_cells": "unavailable",
+        "lanes.nearest_zombie_distance_to_house_px": "unavailable",
+        "lanes.nearest_zombie_distance_to_house_cells": "unavailable",
         "game.phase": "unavailable",
         "game.scene": "unavailable",
         "game.mode": "unavailable",
@@ -146,7 +224,7 @@ def _unavailable_record(message: str, *, sequence: int, status: str = "error") -
         },
         "plants": None,
         "zombies": None,
-        "lanes": [{"row": row, "zombie_count": 0, "zombies": []} for row in range(5)],
+        "lanes": [{"row": row, "zombie_count": 0, "zombies": [], "nearest_zombie_distance_to_house_px": None, "nearest_zombie_distance_to_house_cells": None} for row in range(5)],
         "items": None,
         "collectible_suns": None,
         "cards": None,
@@ -160,6 +238,20 @@ def _integer(value: Any) -> bool:
 
 def _finite_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _distance_to_house_cells(x: Any, geometry: Mapping[str, Any]) -> int | None:
+    if not _finite_number(x):
+        return None
+    if not _finite_number(geometry.get("house_x")):
+        return None
+    boundary = geometry.get("grid_first_boundary_x")
+    pitch = geometry.get("grid_cell_width_px")
+    columns = geometry.get("grid_columns")
+    if not (_finite_number(boundary) and _finite_number(pitch) and pitch > 0 and _integer(columns) and columns > 0):
+        return None
+    index = math.floor((float(x) - float(boundary)) / float(pitch)) + 1
+    return max(0, min(columns - 1, index))
 
 
 def build_state(
@@ -196,6 +288,12 @@ def build_state(
         "cards": "unavailable",
         "cards.cooldown": "unavailable",
         "cards.cost": "unavailable",
+        "cards.cooldown_ready": "unavailable",
+        "cards.usable": "unavailable",
+        "zombies.distance_to_house_px": "unavailable",
+        "zombies.distance_to_house_cells": "unavailable",
+        "lanes.nearest_zombie_distance_to_house_px": "unavailable",
+        "lanes.nearest_zombie_distance_to_house_cells": "unavailable",
         "game.phase": "unavailable",
         "game.scene": "unavailable",
         "game.mode": "unavailable",
@@ -254,7 +352,7 @@ def build_state(
     zombies: list[dict[str, Any]] | None = None
     items: list[dict[str, Any]] | None = None
     cells: list[list[dict[str, Any] | None]] = [[None for _ in range(9)] for _ in range(5)]
-    lanes: list[dict[str, Any]] = [{"row": row, "zombie_count": 0, "zombies": []} for row in range(5)]
+    lanes: list[dict[str, Any]] = [{"row": row, "zombie_count": 0, "zombies": [], "nearest_zombie_distance_to_house_px": None, "nearest_zombie_distance_to_house_cells": None} for row in range(5)]
 
     raw_plants = normalized.get("plants")
     if raw_plants is not None:
@@ -302,12 +400,26 @@ def build_state(
     raw_zombies = normalized.get("zombies")
     if raw_zombies is not None:
         built_zombies: list[dict[str, Any]] = []
+        candidate_domains = raw_snapshot.get("candidates", {})
+        raw_game = candidate_domains.get("game_progress", {}) if isinstance(candidate_domains, Mapping) else {}
+        raw_progress = raw_game.get("raw_candidate_fields", {}) if isinstance(raw_game, Mapping) else {}
+        raw_scene = _read_value(raw_progress.get("scene")) if isinstance(raw_progress, Mapping) else None
+        raw_mode = _read_value(raw_progress.get("mode")) if isinstance(raw_progress, Mapping) else None
+        raw_background = _read_value(raw_progress.get("background")) if isinstance(raw_progress, Mapping) else None
+        geometry = (
+            LAWN_GEOMETRY.get(_BACKGROUND_NAMES.get(raw_background))
+            if raw_scene == 3 and _integer(raw_mode) and raw_mode in range(16)
+            else None
+        ) or {}
         try:
             for zombie in raw_zombies:
                 row, type_code, hp = zombie.get("row"), zombie.get("type"), zombie.get("hp")
                 x, y = zombie.get("x"), zombie.get("y")
                 if not (_integer(row) and 0 <= row < 5 and _integer(type_code) and _integer(hp) and hp >= 0 and _finite_number(x) and _finite_number(y)):
                     raise ValueError(f"Zombie has an invalid row, type, coordinates, or HP: {zombie!r}")
+                house_x = geometry.get("house_x")
+                distance = max(0.0, float(x) - house_x) if _finite_number(house_x) else None
+                distance_cells = _distance_to_house_cells(x, geometry)
                 armor_fields = ("helmet_hp", "shield_hp", "balloon_hp")
                 armor_hp = {
                     name: max(0, zombie[name]) if _integer(zombie.get(name)) else None
@@ -326,18 +438,46 @@ def build_state(
                     "body_hp": hp,
                     **armor_hp,
                     "total_hp": total_hp,
+                    "distance_to_house_px": distance,
+                    "distance_to_house_cells": distance_cells,
                 }
                 built_zombies.append(entry)
                 lanes[row]["zombies"].append(entry.get("id") if entry.get("id") is not None else len(built_zombies) - 1)
             for lane in lanes:
                 lane["zombie_count"] = len(lane["zombies"])
+                lane_entries = [zombie for zombie in built_zombies if zombie["row"] == lane["row"]]
+                distances = [zombie["distance_to_house_px"] for zombie in lane_entries]
+                lane["nearest_zombie_distance_to_house_px"] = min(distances) if distances and all(d is not None for d in distances) else None
+                cell_distances = [zombie["distance_to_house_cells"] for zombie in lane_entries]
+                lane["nearest_zombie_distance_to_house_cells"] = min(cell_distances) if cell_distances and all(_integer(d) for d in cell_distances) else None
             zombies = built_zombies
+            house_x = geometry.get("house_x") if isinstance(geometry, Mapping) else None
+            if _finite_number(house_x):
+                availability["zombies.distance_to_house_px"] = "available"
+                availability["lanes.nearest_zombie_distance_to_house_px"] = "available"
+                evidence["zombies.distance_to_house_px"] = "verified_with_gameplay; Human calibrated daytime house_x=0"
+                evidence["lanes.nearest_zombie_distance_to_house_px"] = "derived_from_verified_zombie_distances"
+            grid_geometry_valid = (
+                _finite_number(house_x)
+                and _finite_number(geometry.get("grid_first_boundary_x"))
+                and _finite_number(geometry.get("grid_cell_width_px"))
+                and _integer(geometry.get("grid_columns"))
+            )
+            if grid_geometry_valid:
+                availability["zombies.distance_to_house_cells"] = "available"
+                availability["lanes.nearest_zombie_distance_to_house_cells"] = "available"
+                evidence["zombies.distance_to_house_cells"] = "verified_with_gameplay; Human calibrated 80px columns and X=50 boundary"
+                evidence["lanes.nearest_zombie_distance_to_house_cells"] = "derived_from_verified_zombie_grid_distances"
         except (AttributeError, TypeError, ValueError) as exc:
             availability["zombies"] = availability["zombies.hp"] = "error"
+            availability["zombies.distance_to_house_px"] = "error"
+            availability["zombies.distance_to_house_cells"] = "error"
+            availability["lanes.nearest_zombie_distance_to_house_px"] = "error"
+            availability["lanes.nearest_zombie_distance_to_house_cells"] = "error"
             err = {"scope": "zombies", "message": str(exc)}
             errors.append(err)
             critical_errors.append(err)
-            lanes = [{"row": row, "zombie_count": 0, "zombies": []} for row in range(5)]
+            lanes = [{"row": row, "zombie_count": 0, "zombies": [], "nearest_zombie_distance_to_house_px": None, "nearest_zombie_distance_to_house_cells": None} for row in range(5)]
 
     raw_items = normalized.get("items")
     items_position_status = availability["items"] if raw_items is not None else "unavailable"
@@ -370,29 +510,100 @@ def build_state(
     if isinstance(seed, Mapping) and isinstance(seed.get("slots"), list):
         cards = []
         slot_count = _read_value(seed.get("slot_count"))
+        raw_game = candidates.get("game_progress", {}) if isinstance(candidates, Mapping) else {}
+        raw_progress = raw_game.get("raw_candidate_fields", {}) if isinstance(raw_game, Mapping) else {}
+        raw_mode_code = _read_value(raw_progress.get("mode")) if isinstance(raw_progress, Mapping) else None
+        raw_scene_code = _read_value(raw_progress.get("scene", raw_progress.get("root"))) if isinstance(raw_progress, Mapping) else None
+        raw_pause_flag = _read_value(raw_progress.get("pause_flag")) if isinstance(raw_progress, Mapping) else None
+        raw_won_flag = _read_value(raw_progress.get("won_flag")) if isinstance(raw_progress, Mapping) else None
+        game_allows_use = _game_allows_card_use(
+            raw_mode_code, raw_scene_code, raw_pause_flag, raw_won_flag
+        )
         for slot in seed["slots"]:
             fields = slot.get("fields", {}) if isinstance(slot, Mapping) else {}
             type_code = _read_value(fields.get("slot_type"))
             imitator_type_code = _read_value(fields.get("imitator_type"))
-            info = plant_info(imitator_type_code) if type_code == 48 else plant_info(type_code)
             type_info = plant_info(type_code)
+            price_type_code = imitator_type_code if type_code == 48 else type_code
+            cost_domain = (candidates.get("plant_definition_costs", {})
+                           if isinstance(candidates, Mapping) else {})
+            cost_entries = cost_domain.get("entries", {}) if isinstance(cost_domain, Mapping) else {}
+            cost_record = (
+                cost_entries.get(str(price_type_code))
+                if isinstance(cost_entries, Mapping) and _integer(price_type_code) and 0 <= price_type_code < 48
+                else None
+            )
+            base_cost = cost_record.get("cost") if isinstance(cost_record, Mapping) else None
+            current_cost = _current_card_cost(base_cost, price_type_code, raw_mode_code, plants)
+            cooldown_progress = _read_value(fields.get("cooldown_progress"))
+            cooldown_total = _read_value(fields.get("cooldown_total"))
+            usable_flag = _read_value(fields.get("usable_flag"))
+            cooldown_ready = (
+                _cooldown_ready(cooldown_progress, cooldown_total, usable_flag)
+                if _integer(raw_mode_code) and raw_mode_code in range(16)
+                else None
+            )
             cards.append({
                 "slot": slot.get("index"),
                 "type_code": type_code,
                 "type_name": type_info.name if type_info else "unknown",
                 "imitator_type_code": imitator_type_code,
-                "cooldown_progress_raw": _read_value(fields.get("cooldown_progress")),
-                "cooldown_total_raw": _read_value(fields.get("cooldown_total")),
-                "usable_flag_raw": _read_value(fields.get("usable_flag")),
-                "cost": info.cost if info else None,
-                "cost_source": "static_catalog" if info and info.cost is not None else None,
+                "cooldown_progress_raw": cooldown_progress,
+                "cooldown_total_raw": cooldown_total,
+                "usable_flag_raw": usable_flag,
+                "cost": current_cost,
+                "cost_source": (
+                    "plant_definition_base_plus_endless_upgrade_surcharge_observed_once"
+                    if current_cost is not None and raw_mode_code in range(11, 16)
+                    else "plant_definition_table_verified_with_gameplay"
+                    if current_cost is not None and raw_mode_code in range(11)
+                    else None
+                ),
+                "cooldown_ready": cooldown_ready,
+                "usable": _card_usable(current_cost, cooldown_ready, sun_balance, game_allows_use),
             })
         if slot_count == len(cards):
             availability["cards"] = availability["cards.cooldown"] = "provisional"
             evidence["cards"] = str(seed.get("evidence_level", "observed_once"))
             if all(card["cost"] is not None for card in cards):
-                availability["cards.cost"] = "provisional"
-                evidence["cards.cost"] = "static_catalog"
+                if _integer(raw_mode_code) and raw_mode_code in range(11):
+                    availability["cards.cost"] = "available"
+                    evidence["cards.cost"] = (
+                        "verified_with_gameplay; Human confirmed standard Adventure/Survival prices against the game on 2026-09-26"
+                    )
+                elif _integer(raw_mode_code) and raw_mode_code in range(11, 16):
+                    availability["cards.cost"] = "provisional"
+                    evidence["cards.cost"] = (
+                        "PlantDefinition base prices and Endless upgrade rule calculated; Endless price event not confirmed"
+                    )
+                else:
+                    availability["cards.cost"] = "unavailable"
+            else:
+                availability["cards.cost"] = "unavailable"
+            availability["cards.cooldown_ready"] = (
+                "available" if cards and all(type(card["cooldown_ready"]) is bool for card in cards)
+                else "unavailable"
+            )
+            if cards and all(type(card["usable"]) is bool for card in cards):
+                availability["cards.usable"] = (
+                    "available" if availability["cards.cost"] == "available"
+                    else "provisional" if availability["cards.cost"] == "provisional"
+                    else "unavailable"
+                )
+            else:
+                availability["cards.usable"] = "unavailable"
+            if availability["cards.cooldown_ready"] == "available":
+                evidence["cards.cooldown_ready"] = (
+                    "verified_with_gameplay; Human observed false after planting and true after cooldown recovery on 2026-09-26"
+                )
+            if availability["cards.usable"] == "available":
+                evidence["cards.usable"] = (
+                    "verified_with_gameplay; Human confirmed card state against price, cooldown, sun balance, and active gameplay on 2026-09-26"
+                )
+            elif availability["cards.usable"] == "provisional":
+                evidence["cards.usable"] = (
+                    "derived from cooldown, sun balance, and active game state; the Endless price input remains provisional"
+                )
         else:
             availability["cards"] = availability["cards.cooldown"] = "error"
             errors.append({"scope": "cards", "message": "Seed slot count does not match decoded slots."})

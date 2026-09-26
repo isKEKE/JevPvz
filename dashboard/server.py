@@ -10,11 +10,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 from state.builder import capture_state
+from state.projection import project_jev_state
 
 
 STATIC_DIR = Path(__file__).with_name("static")
 STATIC_FILES = {
     "/static/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/static/state-page.js": ("state-page.js", "text/javascript; charset=utf-8"),
     "/static/style.css": ("style.css", "text/css; charset=utf-8"),
 }
 
@@ -98,8 +100,15 @@ def create_dashboard_server(
                 payload = json.dumps(poller.latest(), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
                 self._send(200, payload, "application/json; charset=utf-8")
                 return
+            if self.path == "/api/jev-state":
+                payload = json.dumps(project_jev_state(poller.latest()), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                self._send(200, payload, "application/json; charset=utf-8")
+                return
             if self.path == "/":
                 self._send_file(STATIC_DIR / "index.html", "text/html; charset=utf-8")
+                return
+            if self.path == "/state":
+                self._send_file(STATIC_DIR / "state.html", "text/html; charset=utf-8")
                 return
             resource = STATIC_FILES.get(self.path)
             if resource:

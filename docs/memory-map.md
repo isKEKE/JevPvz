@@ -51,10 +51,10 @@ guarantee for this exact executable.
 | Scene/mode | `Root+0x7FC` scene, `Root+0x7F8` mode | Raw `u32` codes retained; known enum codes get names | `observed_once`, `provisional` | Unknown codes remain numeric; menu/loading/credits scenes suppress Board-only progress |
 | Background/progress | `Board+0x554C` background, `+0x5550` level, `+0x5564` total waves, `+0x557C` spawned waves | Raw `u32` values retained; Adventure level `1..50` is labeled `1-N`; other modes keep the raw number | `observed_once`, `provisional` | `mCurrentWave` is shown as waves generated, not currently alive zombies |
 | Pause/level complete | `Board+0x164`, `Board+0x55FC` | Each flag reads exactly one byte; State accepts only `0` or `1` | `observed_once`, `provisional` | A single frame does not establish pause/completion transitions |
-| Seed bank | pointer `Board+0x144`; slot count `SeedBank+0x24`; inline slots at `+0x28`, stride `0x50` | Reads count, card type/imitator, cooldown raw ticks and usable candidate | Single-frame evidence only; cooling and meanings await user gameplay |
+| Seed bank | pointer `Board+0x144`; slot count `SeedBank+0x24`; inline slots at `+0x28`, stride `0x50` | Reads card type/imitator, raw cooldown counters and byte-sized usable flag; emits provisional `cooldown_ready` and slot-level `usable` when raw values agree | Full normal cooldown recovery is not captured; contradictory/boundary states remain null |
 | Terrain | bytes at `Board+0x168`, candidate 6×9 shape | Raw bytes retained without decoding | Cell type and direction unavailable |
 | Items | coordinate candidates `i32/f32` at `+0x24/+0x28`; type at `+0x58`; type 4/5/6 as sun candidates | Raw values retained per item; name mapped through static CoinType table | Type and pixel interpretation remain provisional/candidate |
-| Card cost | Static 1.0.0.1051 plant catalog; no memory address | `cost` is mapped from card type ID | Static reference value; `cost_source=static_catalog` |
+| Card cost | `PlantDefinition` table at `module_base + 0x29F2B0`, stride `0x24`, type `+0x00`, cost `+0x10` | Reads the live base price, applies standard-mode pricing rules, and uses the copied plant type for Imitater | Price evidence is provisional until supported-mode price transitions are fully compared |
 
 Plant names and static prices come from the reconstructed [plant definitions](https://github.com/ruslan831/PlantsVsZombies-decompilation/blob/master/Lawn/Plant.cpp).
 Zombie names are mapped from the [ZombieType enumeration](https://github.com/Patoke/re-plants-vs-zombies/blob/main/ConstEnums.h).
@@ -111,3 +111,83 @@ field and four-byte pause value, so the check used a second port and left that
 process untouched. A second same-capture raw/State check at
 `2026-09-24T05:12:08.880+00:00` found a type-4 bucket zombie with body HP `270`,
 helmet HP `1100`, and parts sum `1370` in both layers.
+
+## P01 State contract update (2026-09-25)
+
+The normalized State uses English identifiers for plant, zombie, item, scene,
+mode, and background values. The Dashboard translates known identifiers by
+numeric code for Chinese display; unknown codes retain their numeric code and
+show a Chinese unknown label. `hp` remains the body HP compatibility alias;
+`total_hp` is a reference sum only when every component was read.
+
+Card cost reads each selected plant's `PlantDefinition` base cost from
+`module_base + 0x29F2B0 + type_code * 0x24 + 0x10`, after checking the adjacent
+type code. Adventure and Normal/Hard Survival use the base price. Endless
+Survival stages 1–5 add 50 per existing same-type plant for upgrade plants
+(types 40–44, 46, and 47). Imitater uses its resolved copied type. A read-only
+Hard Survival screenshot and State captured on 2026-09-26 showed all ten visible
+card prices matching the table. The Human also confirmed the supported standard
+price fields against gameplay; Adventure and Normal/Hard Survival costs are
+available. Endless prices still depend on the existing-plant surcharge rule.
+Other modes, unresolved Imitater types, unavailable Endless plant arrays, and
+table read/type failures have null cost.
+
+`cooldown_ready` uses the dynamically checked usable byte when the raw counter
+pair is valid (`0 <= progress <= total`): byte `1` means true and byte `0` means
+false. Missing flags or malformed counters remain null. Prior placement samples
+showed the raw transition from `(0, total, 1)` to `(positive, total, 0)`, and the
+Human confirmed that planting makes the card false and natural cooldown
+recovery restores true. A read-only Hard Survival sample initially had six
+cards null because ready cards could report `progress == total`; the builder now
+accepts that valid boundary when the usable byte is set. Current card readiness
+and `usable` values are available when all required inputs are valid.
+Slot-level `usable` is true only when the supported game is actively playing,
+the card is cooldown-ready, and the live balance covers its calculated cost; a
+known pause, completed scene, cooling card, or insufficient balance yields
+false. Missing inputs yield null. This does not claim any particular board
+cell is plantable. The Human confirmed the current standard-mode card states
+against gameplay; slot states are available when their price inputs are
+available. Values derived from unverified Endless pricing remain provisional.
+`decision_ready` remains false.
+
+On 2026-09-26 the Human calibrated the standard daytime lawn house touch line
+at X=0, the house-side column boundary at X=50, and 80px columns. The State
+reports `distance_to_house_px=max(0, x-house_x)` plus an integer
+`distance_to_house_cells` index from 0 (house-side column) to 8 (far column),
+using `clamp(floor((x+30)/80), 0, 8)`. Lane summaries report the minimum of
+both distance fields. The former `progress_to_house` field was removed; other
+backgrounds/modes remain unavailable. A live read-only
+`snapshot --once` at 2026-09-25 10:00:12 UTC confirmed that the fixed process
+was running and returned one valid sample; it did not include a corresponding
+screenshot or movement/cooldown event, so it is not V03/V11 evidence.
+The later Human-provided same-scene screenshot/State sample reported row-0
+zombie X values 10, 90, and 170, plus row-1 X=490.5. With `house_x=0`, the
+pixel distances are those same values and the observed lane minima are 10 and
+490.5; the nine-zombie sample at X=10/90/…/650 maps to grid indices 0–8. The
+pasted snapshot predates the geometry update and still shows the new fields as
+unavailable.
+
+## P05 JEV State profile update (2026-09-26)
+
+The JEV profile remains an explicit decision-facing allowlist, but no longer
+contains the top-level `availability` mapping. Fields that cannot be acquired
+remain `null`; All State retains the original availability/evidence diagnostics
+for human inspection. The `/state` page renders either selected profile as a
+collapsible JSON tree without changing its keys, order, nesting, or values.
+Expanded object/array paths are kept per profile across polling updates. Copy
+uses the serialized selected profile payload rather than the rendered DOM. The
+page's “latest snapshot” badge is UI status, not a State availability field.
+JEV per-zombie distances use `distance_to_house_px` and
+`distance_to_house_cells`. JEV lane entries contain row, zombie count, and the
+nearest cell distance; the redundant pixel-lane minimum and `collectible_suns`
+are omitted. All State retains its original per-zombie `distance_to_house_*`
+fields and both lane minima. JEV item entries include `type_name` with their
+code and coordinates; All State keeps its existing item fields.
+
+## P01 CD-08 JEV board cell update (2026-09-26)
+
+For the standard daytime 5×9 lawn, JEV `board.cells[row][col]` uses `null` for
+an empty plantable tile, `false` for a known non-plantable tile, and
+`plant:<type_name>` for an occupied tile. The JEV projection omits separate
+`terrain` and `plantability` fields. Invalid occupancy or an unsupported board
+layout returns `board.cells=null`; All State retains its existing board fields.

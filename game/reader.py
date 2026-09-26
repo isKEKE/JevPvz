@@ -268,6 +268,19 @@ def read_seed_bank(memory: MemoryReader, board_address: int) -> dict[str, Any]:
     }
 
 
+def read_plant_definition_cost(memory: MemoryReader, module_base: int, type_code: int) -> dict[str, int]:
+    """Read and sanity-check one static PlantDefinition type/cost pair."""
+    layout = CANDIDATE_OFFSETS["plant_definition"]
+    address = module_base + int(layout["table_rva"]) + type_code * int(layout["stride"])
+    stored_type = memory.read_u32(address + int(layout["type"]))
+    cost = memory.read_u32(address + int(layout["cost"]))
+    if stored_type != type_code:
+        raise ValueError(f"PlantDefinition type mismatch for {type_code}: found {stored_type}.")
+    if cost > 5000:
+        raise ValueError(f"PlantDefinition cost is outside the supported range for type {type_code}.")
+    return {"type_code": type_code, "cost": cost}
+
+
 def read_game_progress(
     memory: MemoryReader,
     root_address: int,
@@ -353,6 +366,30 @@ def read_raw_snapshot(memory: MemoryReader, module_base: int) -> dict[str, Any]:
         "seed_bank": _safe_domain("seed_bank", read_seed_bank, memory, board),
         "game_progress": _safe_domain("game_progress", read_game_progress, memory, root, board),
         "terrain": read_terrain(memory, board),
+    }
+    card_types: set[int] = set()
+    seed = candidates["seed_bank"]
+    if isinstance(seed, Mapping):
+        for slot in seed.get("slots", []):
+            fields = slot.get("fields", {})
+            type_code = fields.get("slot_type", {}).get("value")
+            imitator_code = fields.get("imitator_type", {}).get("value")
+            actual_type = imitator_code if type_code == 48 else type_code
+            if isinstance(actual_type, int) and not isinstance(actual_type, bool) and 0 <= actual_type < 48:
+                card_types.add(actual_type)
+    cost_entries: dict[str, dict[str, int]] = {}
+    cost_errors: list[dict[str, str]] = []
+    for type_code in sorted(card_types):
+        try:
+            cost_entries[str(type_code)] = read_plant_definition_cost(memory, module_base, type_code)
+        except Exception as exc:
+            cost_errors.append({"type_code": str(type_code), "error": str(exc)})
+    candidates["plant_definition_costs"] = {
+        "status": "provisional" if not cost_errors else "candidate",
+        "evidence_level": "observed_once",
+        "entries": cost_entries,
+        "read_errors": cost_errors,
+        "source_candidate": "PlantDefinition table in fixed executable",
     }
     return {
         "captured_at_utc": captured_at,

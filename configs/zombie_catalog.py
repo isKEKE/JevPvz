@@ -5,14 +5,22 @@ https://github.com/Patoke/re-plants-vs-zombies/blob/main/ConstEnums.h
 """
 
 ZOMBIE_NAMES: tuple[str, ...] = (
-    "普通僵尸", "旗帜僵尸", "路障僵尸", "撑杆跳僵尸",
-    "铁桶僵尸", "读报僵尸", "铁门僵尸", "橄榄球僵尸",
-    "舞王僵尸", "伴舞僵尸", "救生圈僵尸", "潜水僵尸",
-    "冰车僵尸", "雪橇僵尸", "海豚骑士僵尸", "玩偶匣僵尸",
-    "气球僵尸", "矿工僵尸", "跳跳僵尸", "雪人僵尸",
-    "蹦极僵尸", "扶梯僵尸", "投石车僵尸", "巨人僵尸",
-    "小鬼僵尸", "僵王博士", "豌豆射手僵尸", "坚果僵尸",
-    "火爆辣椒僵尸", "机枪射手僵尸", "窝瓜僵尸", "高坚果僵尸",
+    "normal_zombie", "flag_zombie", "conehead_zombie", "pole_vaulting_zombie",
+    "buckethead_zombie", "newspaper_zombie", "screen_door_zombie", "football_zombie",
+    "dancing_zombie", "backup_dancer", "zombie_with_life_preserver", "snorkel_zombie",
+    "zomboni", "zombie_bobsled_team", "dolphin_rider_zombie", "jack_in_the_box_zombie",
+    "balloon_zombie", "digger_zombie", "pogo_zombie", "yeti_zombie",
+    "bungee_zombie", "ladder_zombie", "catapult_zombie", "gargantuar",
+    "imp", "dr_zomboss", "peashooter_zombie", "wall_nut_zombie",
+    "jalapeno_zombie", "gatling_pea_zombie", "squash_zombie", "tall_nut_zombie",
+    "giga_gargantuar", "custom_zombie",
+)
+
+ZOMBIE_LABELS_ZH: tuple[str, ...] = (
+    "普通僵尸", "旗帜僵尸", "路障僵尸", "撑杆跳僵尸", "铁桶僵尸", "读报僵尸", "铁门僵尸", "橄榄球僵尸",
+    "舞王僵尸", "伴舞僵尸", "救生圈僵尸", "潜水僵尸", "冰车僵尸", "雪橇僵尸", "海豚骑士僵尸", "玩偶匣僵尸",
+    "气球僵尸", "矿工僵尸", "跳跳僵尸", "雪人僵尸", "蹦极僵尸", "扶梯僵尸", "投石车僵尸", "巨人僵尸",
+    "小鬼僵尸", "僵王博士", "豌豆射手僵尸", "坚果僵尸", "火爆辣椒僵尸", "机枪射手僵尸", "窝瓜僵尸", "高坚果僵尸",
     "红眼巨人僵尸", "自定义形象僵尸",
 )
 
@@ -20,4 +28,10 @@ ZOMBIE_NAMES: tuple[str, ...] = (
 def zombie_name(type_code: object) -> str | None:
     if type(type_code) is int and 0 <= type_code < len(ZOMBIE_NAMES):
         return ZOMBIE_NAMES[type_code]
+    return None
+
+
+def zombie_label_zh(type_code: object) -> str | None:
+    if type(type_code) is int and 0 <= type_code < len(ZOMBIE_LABELS_ZH):
+        return ZOMBIE_LABELS_ZH[type_code]
     return None
