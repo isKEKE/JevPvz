@@ -25,7 +25,7 @@ AGENTS.md
   002-progress-and-zombie-health/
   003-action-executor/
   004-game-state-observation/
-  005-jev-state-projection/
+  005-action-state-boundary/
 .python-version
 pyproject.toml
 uv.lock
@@ -33,11 +33,11 @@ README.md
 main.py
 configs/{pvz_1051.py,plant_catalog.py,zombie_catalog.py,item_catalog.py}
 runtime/{process.py,memory.py,window.py}
-actions/{__init__.py,executor.py}
+actions/{__init__.py,boundary.py,executor.py}
 game/{arrays.py,reader.py}
 state/{schema.py,builder.py,projection.py}
 dashboard/{server.py,static/index.html,static/app.js,static/state.html,static/state-page.js,static/style.css}
-tests/{test_memory.py,test_reader.py,test_state.py,test_web.py,test_live_validation.py,capture_live_validation.py}
+tests/{test_action_boundary.py,test_memory.py,test_reader.py,test_state.py,test_web.py,test_live_validation.py,capture_live_validation.py}
 docs/{architecture.md,memory-map.md}
 ```
 
@@ -49,15 +49,17 @@ docs/{architecture.md,memory-map.md}
 | `.codex/hooks/` | Iteration 和仓库结构检查脚本。 |
 | `.game/` | 本地目标游戏程序；被 Git 忽略。 |
 | `.memory/` | 跨会话上下文和已实现项目地图。 |
-| `.sdd/` | 001 State 读取、002 关卡/僵尸 HP、003 后台动作执行器、004 State 观察；005 为按用户指示取消后的编号保留记录。 |
+| `.sdd/` | 001 State 读取、002 关卡/僵尸 HP、003 后台动作执行器、004 State 观察及 005 动作/State 接口计划。 |
 | `configs/` | 固定目标身份、静态偏移与植物/僵尸/掉落物目录。 |
 | `runtime/` | Windows 进程定位/身份校验、只读内存原语和目标窗口校验。 |
-| `actions/` | 目标 HWND 定向鼠标消息、语义动作和同进程 State 结果确认。 |
+| `actions/` | 决策侧语义校验/适配，以及目标 HWND 定向动作执行和同进程 State 结果确认。 |
 | `game/` | PvZ 容器与原始对象读取。 |
 | `state/` | 版本化 All State 快照、证据/可用性归一化及 JEV State 显式 allowlist 投影。 |
 | `dashboard/` | 本机只读 HTTP 服务、草坪仪表盘和完整 State 观察页。 |
-| `tests/` | 内存读取、实体、State、页面接口和现场验证逻辑测试。 |
+| `actions/boundary.py` | 校验 JEV/All State 同样本语义请求并将三种动作适配到 ActionExecutor。 |
+| `tests/` | 内存读取、实体、State、动作边界、页面接口和现场验证逻辑测试。 |
 | `docs/` | 当前架构和内存字段说明。 |
+| `tests/test_action_boundary.py` | 固定 State 与 fake Executor 的动作边界、实体 ID、类型后置条件及隔离回归。 |
 | `main.py` | `probe`、`snapshot`、`serve` 和 `action` JSON CLI 统一入口。 |
 | `pyproject.toml`、`.python-version`、`uv.lock` | Python 版本与依赖配置。 |
 | `README.md` | 安装、运行与测试命令。 |

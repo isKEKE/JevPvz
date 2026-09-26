@@ -138,17 +138,21 @@ class ActionExecutor:
         row: int,
         col: int,
         *,
+        expected_type_name: str | None = None,
         timeout_ms: int = DEFAULT_TIMEOUT_MS,
         poll_interval_ms: int = DEFAULT_POLL_INTERVAL_MS,
     ) -> ActionResult:
-        return self.execute({
+        request = {
             "action": "place_plant",
             "card_slot": card_slot,
             "row": row,
             "col": col,
             "timeout_ms": timeout_ms,
             "poll_interval_ms": poll_interval_ms,
-        })
+        }
+        if expected_type_name is not None:
+            request["expected_type_name"] = expected_type_name
+        return self.execute(request)
 
     def collect_item(
         self,
@@ -320,7 +324,7 @@ class ActionExecutor:
 
         common = {"action", "timeout_ms", "poll_interval_ms"}
         allowed = {
-            "place_plant": common | {"card_slot", "row", "col"},
+            "place_plant": common | {"card_slot", "row", "col", "expected_type_name"},
             "collect_item": common | {"item_id"},
             "shovel_cell": common | {"row", "col"},
         }[action]
@@ -341,6 +345,10 @@ class ActionExecutor:
             self._require_integer_range(normalized, "card_slot", 1, 10)
             self._require_integer_range(normalized, "row", 0, 4)
             self._require_integer_range(normalized, "col", 0, 8)
+            if "expected_type_name" in normalized:
+                type_name = normalized.get("expected_type_name")
+                if not isinstance(type_name, str) or not type_name or type_name.strip() != type_name or type_name == "unknown":
+                    raise _UnsupportedRequest("expected_type_name must be a known, non-empty plant type name.")
         elif action == "collect_item":
             item_id = normalized.get("item_id")
             if not _object_id(item_id):
@@ -537,6 +545,23 @@ class ActionExecutor:
         if before_ids is None or cell_before is None:
             raise _ActionProblem("Plant State is unavailable or has unresolved plant IDs; no input was sent.")
 
+        expected_type_name = self._card_type_name(initial, slot)
+        if expected_type_name is None:
+            raise _ActionProblem(
+                "Selected card type is unavailable or ambiguous; no input was sent.",
+                details={"card_slot": slot},
+            )
+        requested_type_name = request.get("expected_type_name")
+        if requested_type_name is not None and requested_type_name != expected_type_name:
+            raise _ActionProblem(
+                "Selected card no longer matches the requested plant type; no input was sent.",
+                details={
+                    "card_slot": slot,
+                    "requested_type_name": requested_type_name,
+                    "observed_card_type_name": expected_type_name,
+                },
+            )
+
         card_profile = ACTION_WINDOW_PROFILE["card_slots"]
         first_x, card_y = card_profile["first_center"]
         card_point = (
@@ -561,17 +586,34 @@ class ActionExecutor:
             new_ids = sorted(cell_after - cell_before)
             new_global_ids = sorted(after_ids - before_ids)
             confirmed = [plant_id for plant_id in new_ids if plant_id in new_global_ids]
-            if len(confirmed) == 1:
-                return "met", {"new_plant_ids": confirmed, "cell_plant_ids": sorted(cell_after)}
             if len(confirmed) > 1:
                 return "ambiguous", {
                     "new_plant_ids": confirmed,
                     "cell_plant_ids": sorted(cell_after),
+                    "expected_type_name": expected_type_name,
                     "reason": "more than one new plant ID appeared in the requested cell",
                 }
+            if len(confirmed) == 1:
+                plants = self._plant_entities(state)
+                if plants is None:
+                    return "pending", {"reason": "plant entities are unavailable"}
+                plant = next((entry for entry in plants if entry.get("id") == confirmed[0]), None)
+                observed_type_name = plant.get("type_name") if isinstance(plant, Mapping) else None
+                evidence = {
+                    "new_plant_ids": confirmed,
+                    "cell_plant_ids": sorted(cell_after),
+                    "expected_type_name": expected_type_name,
+                    "observed_type_name": observed_type_name,
+                }
+                if not isinstance(observed_type_name, str) or not observed_type_name or observed_type_name == "unknown":
+                    return "pending", {**evidence, "reason": "new plant type is unavailable"}
+                if observed_type_name != expected_type_name:
+                    return "mismatch", {**evidence, "reason": "new plant type does not match the selected card"}
+                return "met", evidence
             return "pending", {
                 "new_plant_ids": new_ids,
                 "cell_plant_ids": sorted(cell_after),
+                "expected_type_name": expected_type_name,
                 "reason": "no new plant ID confirmed in the requested cell",
             }
 
@@ -580,7 +622,8 @@ class ActionExecutor:
         )
         details = {
             "target_cell": {"row": row, "col": col},
-            "postcondition": "a new plant ID appears in the requested cell",
+            "expected_type_name": expected_type_name,
+            "postcondition": "a new plant ID appears in the requested cell with the selected type_name",
             "postcondition_result": outcome,
             **wait_details,
         }
@@ -712,7 +755,7 @@ class ActionExecutor:
             last_state = self._capture_for_target(context)
             polls += 1
             outcome, last_evidence = evaluate(last_state)
-            if outcome in {"met", "ambiguous"}:
+            if outcome in {"met", "ambiguous", "mismatch"}:
                 break
             remaining = deadline - self._clock()
             if remaining <= 0:
@@ -727,7 +770,7 @@ class ActionExecutor:
         }
 
     @staticmethod
-    def _plant_ids(state: Mapping[str, Any]) -> set[int] | None:
+    def _plant_entities(state: Mapping[str, Any]) -> list[Mapping[str, Any]] | None:
         availability = state.get("availability", {})
         plants = state.get("plants")
         if (
@@ -743,31 +786,62 @@ class ActionExecutor:
             ids.append(plant["id"])
         if len(ids) != len(set(ids)):
             return None
-        return set(ids)
+        return plants
+
+    @staticmethod
+    def _plant_ids(state: Mapping[str, Any]) -> set[int] | None:
+        plants = ActionExecutor._plant_entities(state)
+        if plants is None:
+            return None
+        return {plant["id"] for plant in plants}
 
     @staticmethod
     def _cell_ids(state: Mapping[str, Any], row: int, col: int) -> set[int] | None:
-        if ActionExecutor._plant_ids(state) is None:
+        plants = ActionExecutor._plant_entities(state)
+        if (
+            plants is None
+            or not _is_int(row) or not 0 <= row < 5
+            or not _is_int(col) or not 0 <= col < 9
+        ):
             return None
-        board = state.get("board")
-        cells = board.get("cells") if isinstance(board, Mapping) else None
-        if not isinstance(cells, list) or len(cells) != 5:
-            return None
-        if any(not isinstance(line, list) or len(line) != 9 for line in cells):
-            return None
-        cell = cells[row][col]
-        if cell is None:
-            return set()
-        if not isinstance(cell, Mapping) or not isinstance(cell.get("plants"), list):
-            return None
-        ids: list[int] = []
-        for plant in cell["plants"]:
-            if not isinstance(plant, Mapping) or not _object_id(plant.get("id")):
+        ids: set[int] = set()
+        for plant in plants:
+            plant_row, plant_col = plant.get("row"), plant.get("col")
+            if (
+                not _is_int(plant_row) or not 0 <= plant_row < 5
+                or not _is_int(plant_col) or not 0 <= plant_col < 9
+            ):
                 return None
-            ids.append(plant["id"])
-        if len(ids) != len(set(ids)):
+            if plant_row == row and plant_col == col:
+                ids.add(plant["id"])
+        return ids
+
+    @staticmethod
+    def _card_type_name(state: Mapping[str, Any], card_slot: int) -> str | None:
+        availability = state.get("availability", {})
+        cards = state.get("cards")
+        if (
+            not isinstance(availability, Mapping)
+            or availability.get("cards") not in {"available", "provisional"}
+            or not isinstance(cards, list)
+        ):
             return None
-        return set(ids)
+        state_slot = card_slot - 1
+        matches = [
+            card for card in cards
+            if isinstance(card, Mapping) and _is_int(card.get("slot")) and card.get("slot") == state_slot
+        ]
+        if len(matches) != 1:
+            return None
+        card = matches[0]
+        type_code, type_name = card.get("type_code"), card.get("type_name")
+        if (
+            not _is_int(type_code) or type_code < 0
+            or not isinstance(type_name, str) or not type_name or type_name.strip() != type_name
+            or type_name == "unknown"
+        ):
+            return None
+        return type_name
 
     @staticmethod
     def _find_item(state: Mapping[str, Any], item_id: int) -> Mapping[str, Any] | None:

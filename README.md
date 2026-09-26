@@ -87,6 +87,37 @@ uv run python main.py action --action-json '{"action":"shovel_cell","row":0,"col
 
 掉落物坐标目前仍是 State 的候选证据，须有有限、唯一可解释且落在支持范围内的坐标，否则拒绝点击。卡槽冷却字段不作为种植门槛。`shovel_cell` 每次只做一次原生铲除并返回实际消失的植物 ID，不承诺选择叠层中的某一株。窗口坐标只支持配置的固定布局；其他尺寸、缩放或多显示器布局会被拒绝。
 
+### 决策侧 ActionBoundary（Python API）
+
+未来的调用者可通过 `actions.ActionBoundary` 将 JEV 可见的语义请求转换成现有 `ActionExecutor` 调用；它不接入 JEV/LLM、策略循环或 HTTP 写接口，也不改变下方的低层 JSON CLI。传入的两个 State 必须来自同一采样：
+
+```python
+from actions import ActionBoundary, ActionValidationError
+from state.builder import capture_state
+from state.projection import project_jev_state
+
+all_state = capture_state()
+jev_state = project_jev_state(all_state)
+boundary = ActionBoundary()
+result = boundary.dispatch(
+    {"action": "place_plant", "type_name": "sunflower", "row": 0, "col": 0},
+    jev_state=jev_state,
+    all_state=all_state,
+)
+```
+
+接受的语义请求为：
+
+```json
+{"action":"place_plant","type_name":"sunflower","row":0,"col":0}
+{"action":"collect_item","type_code":4,"type_name":"sun","x":551.0,"y":448.0}
+{"action":"shovel_cell","row":0,"col":0}
+```
+
+种植只接受当前 JEV `cards` 中唯一匹配且 `usable` 严格为 `true` 的植物，并要求目标 `board.cells[row][col]` 严格为 `null`；JEV 卡槽 0–9 会转换为 Executor 卡槽 1–10。Executor 会在输入前重新核对该卡槽的植物类型，且只有目标格出现新 ID、其 `type_name` 与请求植物一致时才报告成功。收取只使用 JEV 可见的 `type_code`、`type_name`、`x`、`y`，Adapter 必须在同 `sample_sequence` 的 All State 中唯一解析 item ID；JEV 投影仍不包含 ID。铲除只接受 `plant:<type_name>` 格，按 row/col 执行一次原生铲除；叠层格不保证移除某个指定实体。缺字段、未知值、不可用卡牌、空/不可种/占用格、样本序号不一致或目标歧义都会在调用 Executor 前 fail closed；拒绝时抛出 `ActionValidationError`，通过后返回 `ActionExecutor` 的 `ActionResult`。
+
+上述边界只面向未来 Python 调用者；现有 `main.py action` 仍直接接受低层请求（1 基 `card_slot` 或 All State `item_id`），不自动经过 `ActionBoundary`。
+
 ## 实机 State 与截图证据
 
 由维护者显式运行采集工具；它不会启动或关闭游戏，也不会调用 LLM。输出目录由调用者指定，内含 JSON 元数据和（有截图的场景）目标游戏窗口 PNG：
