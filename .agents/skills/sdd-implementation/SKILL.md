@@ -1,12 +1,12 @@
 ---
 name: sdd-implementation
-description: Implement one explicitly named and approved SDD Iteration through bounded implementation sub-agents and acceptance checks. Do not perform independent verification, delivery, commit, or push.
+description: Implement one explicitly named and approved SDD Iteration through its planned Tasks and acceptance checks. Do not perform Verify, Delivery, commit, or push.
 ---
 
 # SDD Implementation
 
-根据已批准的具体 Plan 执行实现、测试和实现验收。用户调用本 skill 即授权启动
-实现 sub-agent，但不授权扩大 Plan 范围。完成实现验收后停止。
+根据已批准的具体 Plan 执行实现、测试和实现验收。本 skill 默认由当前 main agent
+执行。完成实现验收后停止。
 
 ## 前置条件
 
@@ -18,16 +18,12 @@ description: Implement one explicitly named and approved SDD Iteration through b
    `plan-index.md`、全部相关具体 Plan、当前 Git 状态以及受影响源码和测试。
 4. 要求 Iteration 与相关 Plan 已 Approved，阻塞性 Open Decision 已解决。
    缺少批准、Plan 自相矛盾或实现需要扩展范围时，停止并返回 Human Review。
-5. 必须完整读取 [实施编排规则](references/orchestration.md) 后再派发 worker。
-
 ## 执行边界
 
-- 主 agent 负责分解、派发、等待和实现验收，不直接编写生产 Task。
-- 使用平台原生 sub-agent；不得创建用户可见的新 task/thread。没有可用的
-  sub-agent provider 时停止，不在主 agent 静默降级实现。
-- 耦合工作使用一个 worker；只有依赖独立且写文件不重叠的工作流才并行。
-- 每个 worker 仅修改被分配的源码、测试和其拥有的具体 Plan Task backfill。
-  worker 必须编写/运行 Plan 要求的 unit/targeted tests，并报告证据。
+- 按批准的 Task 和依赖顺序实现，不扩大 Plan 范围。
+- 每个 Task 只修改 Plan 允许的源码、测试和对应 Task backfill；完成后同步
+  checkbox、实际文件、Implementation notes 与 Validation evidence。
+- 按 Plan 执行所需的 unit/targeted checks，并记录命令、结果和证据。
 - 实现中的测试和主 agent acceptance 属于 Implementation，不得写 `verify.md`
   或宣称正式 Verify 已通过。
 - 不创建 `implement.md`，不执行 Delivery、Git commit 或 Git push。

@@ -115,10 +115,6 @@ flowchart LR
 
 - [ ] T1 — <summary title>
   - Objective:
-  - Execution hint:
-    - Width: `narrow` | `standard` | `broad`
-    - Worker effort: `medium` (default) | `high` (justify)
-    - Budget override: None; uses `sdd-implementation` defaults
   - Affected files:
     ```text
     Expected:
@@ -133,21 +129,25 @@ flowchart LR
       Pending
     ```
 
-Task 只用 checkbox 表示是否完成：`[ ]` 表示仍需继续，`[x]` 表示完成。Execution hint 只记录任务宽度、建议 effort 和经批准的预算覆盖；未覆盖时使用 `.agents/skills/sdd-implementation/references/orchestration.md` 的默认值。实现完成后只回填对应 Task 的 Implementation backfill；其他状态、验收、验证和阻塞信息不在 Task 内重复记录。验证统一写在第 7 部分，并使用 `T1`、`T2` 等 Task ID 关联。
+Task 只用 checkbox 表示是否完成：`[ ]` 表示仍需继续，`[x]` 表示完成。实现完成后只回填对应 Task 的 Implementation backfill；其他状态、验收、验证和阻塞信息不在 Task 内重复记录。验证统一写在第 7 部分，并使用 `T1`、`T2` 等 Task ID 关联。Task 的执行方式由阶段运行时决定，不在 Plan 中绑定到 agent、effort 或预算。
 
 ## 7. Validation
 
 ### Traceability
 
-| Requirement ID | Task ID | Check | Expected evidence |
-|---|---|---|---|
-| R1 | T1 | TBD | TBD |
+| Check ID | Requirement ID | Task ID | Check | Tier and reason | Expected evidence | Delivery impact / escalation condition |
+|---|---|---|---|---|---|---|
+| V1 | R1 | T1 | TBD | G1: TBD | TBD | TBD |
+
+G1 只包含证明本次目标所需的最小充分检查。G2 写明哪些结果需要 Human 接受、
+什么情况会升级为 G1；G3 写明本次可暂缓的理由和未来重查条件。未执行的检查
+不得预写为通过。检查级别应与 Plan Index 的需求基线及当前交付边界一致。
 
 ### Commands
 
-- 目标运行环境/测试命令：
-- 静态检查：
-- 针对性测试：
+- 目标运行环境/测试命令（标注 Check ID）：
+- 静态检查（标注 Check ID）：
+- 针对性测试（标注 Check ID）：
 
 ### Implementation evidence
 
@@ -156,7 +156,7 @@ Implementation 阶段按 Task ID 回填实际执行的命令、结果和关键�
 
 ### Manual checks
 
--
+- <Check ID> — <操作、观察结果与可记录证据>
 
 ## 8. Risks
 

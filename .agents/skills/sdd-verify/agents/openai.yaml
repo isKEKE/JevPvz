@@ -1,6 +1,6 @@
 interface:
   display_name: "SDD Verify"
-  short_description: "独立反向验证原始需求、批准 Plan、代码实现与运行证据"
-  default_prompt: "Use $sdd-verify to independently verify the implemented Iteration I name."
+  short_description: "反向验证原始需求、批准 Plan、代码实现与运行证据"
+  default_prompt: "Use $sdd-verify to verify the implemented Iteration I name."
 policy:
   allow_implicit_invocation: false

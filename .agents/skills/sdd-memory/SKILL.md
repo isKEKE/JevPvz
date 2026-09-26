@@ -10,7 +10,7 @@ description: Maintain the repository-scoped SDD context and project map when loa
 内容与仓库证据冲突时，以当前仓库和对应 Iteration 为准。
 
 SDD stage 在读取或写入任一 memory 文件前，必须完整读取本 skill。所有 memory
-写入由主 agent 完成；implementation/verifier sub-agent 只能读取，不能并发修改。
+写入由主 agent 完成；delegated implementation/verifier agent 只能读取，不能并发修改。
 
 ## Context schema
 
@@ -58,7 +58,7 @@ Activity 裁剪到八条。不得写入密钥、凭据、个人数据、长日�
 
 ### Implementation
 
-- worker 只读两个 memory 文件；主 agent 独占写入。
+- Delegated Implementation agent 只读两个 memory 文件；主 agent 独占写入。
 - 只有实现 acceptance 完成后，才按实际新增、删除、移动的结构及真实技术变化
   更新 Project Map；失败或未完成的计划内容不得进入地图。
 - 每个 terminal outcome 都更新 Context 的完成 Task、实际变更摘要、测试结果、
@@ -66,7 +66,7 @@ Activity 裁剪到八条。不得写入密钥、凭据、个人数据、长日�
 
 ### Verify
 
-- verifier 和主 agent 都把 Project Map 当作只读输入。地图与仓库不一致时，将其
+- Verify 阶段把 Project Map 当作只读输入；delegated verifier 同样只读。地图与仓库不一致时，将其
   写入 `verify.md` 的 issue/missing evidence，不在 Verify 阶段修正地图。
 - Verify 结论确定后，由主 agent 更新 Context 的 Passed/Failed/Blocked、关键发现、
   blocker 和 next action，并写入一条 Verify activity。
@@ -88,5 +88,5 @@ Activity 裁剪到八条。不得写入密钥、凭据、个人数据、长日�
 ## Completion check
 
 写入后确认：两个文件仍保留规定标题；Context 最多八条 activity 且无已解决事项；
-Project Map 只含当前事实；没有 sub-agent 写入冲突。最终响应只需概括 memory
+Project Map 只含当前事实；没有 delegated agent 写入冲突。最终响应只需概括 memory
 变化，不复制全文。

@@ -1,0 +1,6 @@
+interface:
+  display_name: "SDD Agents"
+  short_description: "按需委派 SDD 阶段并查看实现、验证、交付 agent 输入契约"
+  default_prompt: "Use $sdd-agents to delegate a named SDD stage, explain sub-agent usage, or inspect a role input contract."
+policy:
+  allow_implicit_invocation: false

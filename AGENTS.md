@@ -1,42 +1,24 @@
 # Agent Instructions
 
 This repository uses an explicitly invoked Spec-Driven Development (SDD)
-workflow implemented by four repository skills:
+workflow implemented by four explicit stage skills:
 
 - `$sdd-plan` — create, revise, or approve an Iteration Plan.
 - `$sdd-implementation` — implement one approved Iteration.
-- `$sdd-verify` — independently verify one implemented Iteration.
+- `$sdd-verify` — verify one implemented Iteration.
 - `$sdd-delivery` — write Delivery, commit, and push one verified Iteration.
 
-## Stage runtime configuration
+## Stage execution defaults
 
-The repository does not pin a concrete model. Each stage uses the maximum
-context length supported by its selected or inherited model.
-
-### Implementation
-
-- Execution: fresh-context worker sub-agents; no parent conversation transcript.
-- Model: inherit the current main-agent model; a worker must not change it.
-- Reasoning effort: `medium` for narrow/standard work; `high` for broad work,
-  difficult debugging, or narrowed repair; `max` only when the user explicitly
-  overrides it or a documented exception requires it.
-- Context-Length: use the maximum supported by the inherited model.
-
-### Verify
-
-- Execution: one fresh-context verifier sub-agent; no Implementation worker or
-  parent conversation transcript is reused.
-- Model: inherit the current main-agent model unless explicitly overridden.
-- Reasoning effort: inherit the current main-agent effort unless explicitly
-  overridden.
-- Context-Length: use the maximum supported by the inherited model.
-
-### Delivery
-
-- Execution: the current main agent; Delivery does not start a sub-agent.
-- Model: use the current main-agent model.
-- Reasoning effort: use the current main-agent effort.
-- Context-Length: use the maximum supported by the current main-agent model.
+- Plan, Implementation, Verify, and Delivery run in the current main-agent
+  context by default. Invoking a stage skill alone never starts sub-agents.
+- `$sdd-agents` is the separate, explicit opt-in for sub-agent execution,
+  explanation, and role input contracts. For execution, pair it with exactly
+  one supported stage and Iteration name or ID. It owns delegation mechanics;
+  the selected stage skill continues to own stage requirements and lifecycle.
+- Main-agent stages use the maximum context length supported by the selected or
+  inherited model. Optional sub-agent model, effort, isolation, and budget rules
+  belong to `.agents/skills/sdd-agents/`.
 
 ## Session bootstrap
 
@@ -57,7 +39,9 @@ inspect relevant files when useful, test feasibility, compare implementation and
 validation paths, consult relevant documentation, and surface open decisions.
 Do not create an Iteration or SDD artifact merely because a requirement is being
 discussed. A direct non-SDD edit remains a direct task when the user explicitly
-asks for it.
+asks for it. SDD stages also run directly in the main agent by default. Use
+`$sdd-agents` for explicit delegation, usage explanations, or role-input
+questions; only its delegation mode starts sub-agents.
 
 Never infer an SDD stage or advance to the next stage. Each stage requires its
 own explicit skill invocation. Do not create standalone `spec.md` or

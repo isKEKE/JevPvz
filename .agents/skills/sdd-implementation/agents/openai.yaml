@@ -1,6 +1,6 @@
 interface:
   display_name: "SDD Implementation"
-  short_description: "由受限 sub-agent 实现已批准的 SDD Iteration"
+  short_description: "在主 agent 上下文中实现已批准的 SDD Iteration"
   default_prompt: "Use $sdd-implementation to implement the approved Iteration I name."
 policy:
   allow_implicit_invocation: false
