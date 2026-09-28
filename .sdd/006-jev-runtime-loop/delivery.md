@@ -7,6 +7,8 @@
 - Branch: `main` (upstream `origin/main`)
 - Commit type: `feat`
 - Planned commit subject: `sdd(006): feat async JEV runtime loop with layered policy`
+- Commit hash: `a08105bf109e7453938243a3cec78d926129f5d8`（60 文件）
+- Pushed: `origin/main`（`4d9daa4..a08105b`，普通 push，2026-09-27）
 
 ## 2. Summary
 
@@ -64,7 +66,7 @@ JEV 判断、以及统一串行的动作执行，并把采集路径改为持有�
 |---|---|---|---|---|
 | P01 | Approved；实施完成、Passed | T1 | 无 | `decision_ready` 准入闸门；`verify.md` V01/V02 Passed。 |
 | P02 | Approved；实施完成、Passed | T1–T2 | 无 | TypeSafe typed API 与机制目录；V03–V05 Passed。 |
-| P03 | Approved；实施完成、本轮 Passed；**第 10 次修订的 Plan Approval 为 `Pending human review`** | T1–T38（全部 `[x]`） | 无 | 共 10 次修订；R50–R55/T33–T38 属「直接实施后追认」（见 §7）。全量 420 tests OK。 |
+| P03 | Approved（含第 10 次修订，2026-09-27 获批）；实施完成、本轮 Passed | T1–T38（全部 `[x]`） | 无 | 共 10 次修订；R50–R55/T33–T38 属「直接实施后追认」（见 §7）。全量 420 tests OK。 |
 | P04 | Approved；本轮按 Human 接受记录 | T1–T3 | 无 | 实施产物在 5 局真机中持续产出并被消费；未单独重跑其确定性检查（Human 接受）。 |
 | P05 | Approved；实施完成、Verify Passed（仅 P05 范围） | T1–T3 | 无 | 采样会话与目标身份；仅 R12–R14 为 Passed。 |
 
@@ -115,8 +117,8 @@ Delivery may proceed only when the recorded formal result is `Passed`. —— �
 2. **R50–R55 / T33–T38 属「直接实施后追认」**：Human 明确指示「不走 SDD、直接改」，主 agent
    直接实施并验证（全量 420 tests OK + 变异回放 CAUGHT），随后由 `$sdd-plan` 第 10 次修订
    追认为正式需求与实现记录。
-3. **P03 第 10 次修订的 Plan Approval 仍为 `Pending human review`**：`verify.md` §9 按 Human
-   裁定接受；Plan 未被修改。若 Human 回 `approved`，仅需把 Plan 状态同步为 Approved（只改状态）。
+3. **P03 第 10 次修订的 Plan Approval**：交付时记为 `Pending human review`（实质修订会重置），
+   Human 于 2026-09-27 明确批准后已同步为 **Approved**（追认型修订，实现与交付内容未变）。
 4. **`configs/plant_experience.txt` 内容由 Human 直接编辑**：工程只保证格式/预算/字段引用合法，
    经验文本内容不在工程可控范围。
 

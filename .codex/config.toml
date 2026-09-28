@@ -8,6 +8,7 @@ project_doc_max_bytes = 32768
 # Uncomment and replace with a model available in your Codex environment.
 # model = "gpt-5.5-codex"
 
+model_verbosity = "medium"
 [features]
 hooks = true
 

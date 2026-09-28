@@ -4,7 +4,7 @@
 
 - Iteration: 006-jev-runtime-loop
 - Created at: 2026-09-27
-- Status: Pending human review
+- Status: Approved
 - Owner: 本仓库维护者
 
 ## 2. Goal
@@ -145,7 +145,7 @@
 |---|---|---|---|---|---|
 | P01 | decision_ready gate | 让 State 对是否进入 JEV 决策给出可验证的布尔结果 | None | Approved | plans/01-decision-ready.md |
 | P02 | TypeSafe Decision/Action 与机制目录 | 用官方 typed API 实现 Router + 按需 Action，补齐植物/僵尸英文描述 | None | Approved | plans/02-jev-api.md |
-| P03 | T1–T38已实施（420 tests OK）；第8次修订（R45–R47、T28–T30、V70–V72：植物 instructions 方向锚定 + 手编经验文件 configs/plant_experience.txt + run 级结果事实）已实施；第9次修订（R48–R49、T31–T32、V73–V74：掉落物区域 (0,80,800,600) + 植物能力事实；OD-59 队列已闭环）；第10次修订（R50–R55：威胁标签化+undefended 升档、OD-59 队列、管理校验、Trace final_phase、目录 engagement、描述事实与经验策略）已直接实施、待批准 | T1–T15已实施；collect ID整批/shared自主经营/事实与意图来源校验/无本地重排/Trace证据完成；主agent350 tests OK | P01、P02、P05 | T1–T38 Implementation complete (T33–T38 implemented directly at Human request); 10th revision pending human review | plans/03-runtime-loop.md |
+| P03 | T1–T38已实施（420 tests OK）；第8次修订（R45–R47、T28–T30、V70–V72：植物 instructions 方向锚定 + 手编经验文件 configs/plant_experience.txt + run 级结果事实）已实施；第9次修订（R48–R49、T31–T32、V73–V74：掉落物区域 (0,80,800,600) + 植物能力事实；OD-59 队列已闭环）；第10次修订（R50–R55：威胁标签化+undefended 升档、OD-59 队列、管理校验、Trace final_phase、目录 engagement、描述事实与经验策略）已直接实施、待批准 | T1–T15已实施；collect ID整批/shared自主经营/事实与意图来源校验/无本地重排/Trace证据完成；主agent350 tests OK | P01、P02、P05 | Approved; T1–T38 Implementation complete (T33–T38 implemented directly at Human request); 10th revision approved | plans/03-runtime-loop.md |
 | P04 | Runtime Trace and JEV Timeline | 持久化 Router/Action 阶段 JSONL，并在 Dashboard JEV 页面只读呈现时间线 | P03 | Approved | plans/04-runtime-trace.md |
 | P05 | 采样会话与目标身份 | 已实施T1–T3；capture默认使用持有句柄的TargetSession，身份时间明确；现场稳态中位3.49ms | None | Approved; Implementation complete; Verify Passed（仅P05） | plans/05-capture-session.md |
 
@@ -368,7 +368,7 @@ P03 二次修订新增 G1 检查 V29–V34：请求拓扑一次性（V29）、�
 
 ## 9. Approval
 
-- Status: Pending human review
+- Status: Approved
 - Approved by: Human
 - Approval date: 2026-09-27 2026-09-27 2026-09-27 2026-09-27
 - Notes: P01/P02/P04基础批准与历史实现保留；P05已Approved、T1–T3完成、Verify Passed（仅R12–R14，见verify.md）。P03本次同步默认连续观察、相关变化→JEV/未变skip、latest-only、无collect→plant依赖/资源预留；旧T1/T2历史，新T3–T7未实施。OD-21/25/26/27已确认；OD-15/22剩余细节待定，Iteration整体仍Pending human review/未验证。 2026-09-27 二次修订（P03）：按用户指令对齐 TypeSafe 官方 pattern，新增 R18–R20、OD-28–OD-31，修订 OD-08，重写 OD-15，扩展 T3/T4/T7 与 V29–V33；P02 记为历史同步基线；Approval 因实质范围修订回到 Pending。 追加：OD-22 方法已确认（Option A，来源用户「od-22 a」，2026-09-27），仅剩余 key/阈值/TTL/恢复/计数数值待定；OD-15 更新推荐为 C（全枚举 + 显式上限）并附三个条件与 V34 实测门槛，A 仍为可接受保守选择，OD-15 保持 Open。 追加：OD-15 已由 Human 选定 **Option C（全枚举、不截断、不排 shortlist）**，依据官方 `primitives/choice` 的 255 上限与「give the model the full list … rather than a shortlist」；超 255 改用官方「chain Choice questions level by level」；V34 降为 G2；OD-22 的 Open 列表增收「问题措辞与门槛数值」与「层级拆分顺序」。仅 OD-22 剩余待定。 OD-22 七项数值与口径已确认并转入 Confirmed；§5.1 无阻塞性 Open Decision；「问题措辞」改由 V41 在 Implementation 后由 Human 审阅；新增 V35–V41。P03 等待 Human 明确批准。 2026-09-27 Human 批准 P03 后，全部具体 Plan（P01–P05）均已 Approved 且无阻塞性 Open Decision，故按规则把 Iteration 级 Status 置为 Approved。Implementation 尚未开始；P03 的 T3–T7 未实施，P05 的实现未提交。 2026-09-27 三次修订：按实机运行发现新增 R21/R22、OD-32/OD-33 与 T8/T9（collect 决策前提与目标身份分离；Trace 记录模型实际输入），Approval 依规则回到 Pending。Iteration 级因此恢复 Pending。 追加：2026-09-27 Human 明确批准 P03 三次修订；P01–P05 全部 Approved、§5.1 无阻塞 Open Decision，Iteration 恢复 **Approved**。T8/T9 未实施。
@@ -410,3 +410,5 @@ P03 二次修订新增 G1 检查 V29–V34：请求拓扑一次性（V29）、�
 - 2026-09-27 九次修订实施（T31/T32，`$sdd-implementation`+`$sdd-agents` 单波 2 代理）：T31 = `bounds` `(0,80,800,600)` + V61 改写（`test_action_boundary.py` 22→25，另授权改 `test_jev_loop.py` 3 处 fixture 与 `test_live_validation.py` 1 处）；T32 = `catalog_context.plant_abilities` + `plants[].role` + Trace parity（`test_jev_client.py` 75→79、`test_jev_trace.py` 28→29，另改 `jev/strategy.py` —— `plants[]` 实际装配处）。全量 **406 → 414 OK**；主 agent 独立验收：探针 20/20 PASS、变异回放 8/8 CAUGHT 且逐字节还原。残留：`docs/architecture.md` 旧区域文字待同步；OD-46 现场闭环与 OD-59 仍 Open；未 commit。
 
 - 2026-09-27 十次修订（直接实施回填 + Human 接受）：把 Human「不走 SDD、直接改」的六项改动追认为 R50–R55 与 T33–T38（均 `[x]`）及 V75–V80（全量 420 tests OK），OD-59 从 Open 移入 Confirmed（已闭环）；并如实记录 **Human 接受声明**（「006 已达到期望、已测出 JEV 能力上限，006 可以 passed」）——不改变 `verify.md` 既有内容，P03/P04 正式 Verify 仍需显式 `$sdd-verify`，V07/V41 仍未执行。P03 与 Iteration 的 Approval 依规则回到 Pending。
+
+- 2026-09-27 第 10 次修订（直接实施回填 + Human 接受）获 Human 明确批准（「approved 改下状态」）：无阻塞性 Open Decision → P03 与 Iteration 的 Approval 恢复 **Approved**；该修订为追认型（T33–T38 均 `[x]`），实现状态未变。
