@@ -51,6 +51,20 @@ collect click blocked the only execution worker for 10.2 s and dropped a visible
 sun. Only the collect request therefore carries this bounded budget.
 """
 
+COLLECT_CONFIRMATION_POLL_INTERVAL_MS = 60
+"""Poll spacing of one collect confirmation (OD-47, R36).
+
+A JEV Trace replay measured every successful collect confirming after 4-5 polls
+at the executor's 250 ms default: the game clears the item from its item list
+only ~550-800 ms after the click, while one All State capture costs only ~53 ms.
+The 250 ms spacing therefore added up to a whole interval of pure quantization
+tail to every collect (measured boundary elapsed 1014-1391 ms against 796-1093 ms
+of actual waiting). Asking every 60 ms keeps every poll cheap, cuts that tail to
+at most 60 ms, and does not weaken the bounded budget: the request still stops at
+``COLLECT_CONFIRMATION_TIMEOUT_MS``. The value sits at the Boundary's own 50 ms
+floor with one interval of headroom.
+"""
+
 URGENCY_BANDS = ("none", "low", "medium", "high", "critical")
 """The OD-30 ordered lane bands, lowest first."""
 
@@ -439,10 +453,11 @@ def _dispatch_request(
     the identity the Boundary validates, and the Executor resolves the click point
     from that id against the live sample.
 
-    A collect request also carries the bounded confirmation timeout of OD-47: a
-    click State never confirms must come back quickly, because it holds the only
-    execution worker for as long as it waits. Plant and shovel requests are left
-    exactly as the proposal's target was, so the executor's own default applies.
+    A collect request also carries the bounded confirmation timeout and poll
+    spacing of OD-47: a click State never confirms must come back quickly, because
+    it holds the only execution worker for as long as it waits. Plant and shovel
+    requests are left exactly as the proposal's target was, so the executor's own
+    defaults apply.
     """
     request = dict(target)
     if request.get("action") == _COLLECT_ACTION:
@@ -450,6 +465,7 @@ def _dispatch_request(
         request.pop("x", None)
         request.pop("y", None)
         request["timeout_ms"] = COLLECT_CONFIRMATION_TIMEOUT_MS
+        request["poll_interval_ms"] = COLLECT_CONFIRMATION_POLL_INTERVAL_MS
     return request
 
 
@@ -597,6 +613,7 @@ __all__ = [
     "ActionDispatch",
     "ActionProposal",
     "ActionScheduler",
+    "COLLECT_CONFIRMATION_POLL_INTERVAL_MS",
     "COLLECT_CONFIRMATION_TIMEOUT_MS",
     "COLLECT_URGENCY",
     "DISCARD_CARD_NOT_USABLE",

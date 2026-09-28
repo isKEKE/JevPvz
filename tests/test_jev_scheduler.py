@@ -13,10 +13,11 @@ import unittest
 from typing import Any, Mapping
 
 from actions.boundary import ActionValidationError, ActionValidator
-from actions.executor import ActionResult, DEFAULT_TIMEOUT_MS
+from actions.executor import ActionResult, DEFAULT_POLL_INTERVAL_MS, DEFAULT_TIMEOUT_MS
 from state.projection import project_jev_state
 
 from jev.scheduler import (
+    COLLECT_CONFIRMATION_POLL_INTERVAL_MS,
     COLLECT_CONFIRMATION_TIMEOUT_MS,
     COLLECT_URGENCY,
     DISCARD_CARD_NOT_USABLE,
@@ -467,6 +468,7 @@ class CollectPreDispatchReviewTests(SchedulerCase):
                     "type_name": "sun",
                     "item_id": 1,
                     "timeout_ms": COLLECT_CONFIRMATION_TIMEOUT_MS,
+                    "poll_interval_ms": COLLECT_CONFIRMATION_POLL_INTERVAL_MS,
                 }
             ],
         )
@@ -478,7 +480,7 @@ class CollectPreDispatchReviewTests(SchedulerCase):
         latest = pair(2, sun=100, items=[item(7)])
         self.dispatch(proposal, latest)
         request = self.boundary.requests[0]
-        self.assertEqual(set(request), {"action", "type_code", "type_name", "item_id", "timeout_ms"})
+        self.assertEqual(set(request), {"action", "type_code", "type_name", "item_id", "timeout_ms", "poll_interval_ms"})
         self.assertEqual(dispatch_item_id(proposal), 7)
 
     def test_a_dropped_item_that_moved_is_still_dispatched_on_the_same_decision(self):
@@ -789,7 +791,8 @@ class CollectConfirmationTimeoutTests(SchedulerCase):
     A controlled run measured a successful collect confirmation at 1091 ms median
     and 1431 ms maximum, and one unconfirmed click blocked the only execution
     worker for 10.2 s. Only the collect request therefore carries the shorter
-    budget; planting and shovelling keep the executor's 10 s default.
+    budget; planting and shovelling keep the executor's 10 s default. The same
+    request also carries the denser confirmation poll spacing of OD-47.
     """
 
     def test_every_collect_request_carries_the_bounded_confirmation_timeout(self):
@@ -802,6 +805,36 @@ class CollectConfirmationTimeoutTests(SchedulerCase):
         # The executor default is the plant/shovel budget and must not move.
         self.assertEqual(DEFAULT_TIMEOUT_MS, 10_000)
         self.assertLess(COLLECT_CONFIRMATION_TIMEOUT_MS, DEFAULT_TIMEOUT_MS)
+
+    def test_the_collect_request_uses_the_denser_confirmation_poll_spacing(self):
+        # The 250 ms executor default re-added a whole interval of quantization tail
+        # to every collect: replaying a JEV Trace showed each success confirming
+        # after 4-5 polls while one capture costs only ~53 ms. The collect request
+        # therefore carries the shorter spacing, still inside the Boundary's own
+        # 50 ms floor, and it stays strictly below the executor default.
+        proposal = collect_proposal(item_id=1)
+        latest = pair(2, sun=100, items=[item(1)])
+
+        self.assertEqual(self.dispatch(proposal, latest).outcome, OUTCOME_EXECUTED)
+        self.assertEqual(COLLECT_CONFIRMATION_POLL_INTERVAL_MS, 60)
+        self.assertEqual(self.boundary.requests[0]["poll_interval_ms"], 60)
+        self.assertGreaterEqual(COLLECT_CONFIRMATION_POLL_INTERVAL_MS, 50)
+        self.assertLess(COLLECT_CONFIRMATION_POLL_INTERVAL_MS, DEFAULT_POLL_INTERVAL_MS)
+
+    def test_the_denser_spacing_still_passes_the_real_boundary_validator(self):
+        proposal = collect_proposal(item_id=1)
+        latest = pair(2, sun=100, items=[item(1)])
+        self.dispatch(proposal, latest)
+        request = self.boundary.requests[0]
+        jev_state, all_state_ = self.boundary.states[0]
+
+        validated = ActionValidator().validate(
+            request, jev_state=jev_state, all_state=all_state_
+        )
+        self.assertEqual(validated.action, "collect_item")
+        self.assertEqual(
+            validated.arguments["poll_interval_ms"], COLLECT_CONFIRMATION_POLL_INTERVAL_MS
+        )
 
     def test_the_shorter_budget_still_passes_the_real_boundary_validator(self):
         proposal = collect_proposal(item_id=1)
