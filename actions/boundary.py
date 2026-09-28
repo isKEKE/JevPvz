@@ -53,7 +53,7 @@ class ActionValidator:
         common = {"action", "timeout_ms", "poll_interval_ms"}
         fields = {
             "place_plant": common | {"type_name", "row", "col"},
-            "collect_item": common | {"type_code", "type_name", "x", "y"},
+            "collect_item": common | {"type_code", "type_name", "x", "y", "item_id"},
             "shovel_cell": common | {"row", "col"},
         }[action]
         extras = set(request) - fields
@@ -63,7 +63,7 @@ class ActionValidator:
             )
         required = {
             "place_plant": {"type_name", "row", "col"},
-            "collect_item": {"type_code", "type_name", "x", "y"},
+            "collect_item": ({"item_id", "type_code", "type_name"} if "item_id" in request else {"type_code", "type_name", "x", "y"}),
             "shovel_cell": {"row", "col"},
         }[action]
         missing = required - set(request)
@@ -174,6 +174,17 @@ class ActionValidator:
         jev_state: Mapping[str, Any],
         all_state: Mapping[str, Any],
     ) -> dict[str, Any]:
+        if "item_id" in request:
+            if not _object_id(request["item_id"]):
+                raise ActionValidationError("item_id must be a positive integer.")
+            matches = [item for item in self._all_items(all_state) if item["id"] == request["item_id"]]
+            if len(matches) != 1:
+                raise ActionValidationError("item_id must resolve uniquely in the same sample.")
+            record = matches[0]
+            if record.get("type_code") != request.get("type_code") or record.get("type_name") != request.get("type_name"):
+                raise ActionValidationError("Item type evidence does not match its ID.")
+            _item_attributes(record, "All State item")
+            return {"item_id": record["id"]}
         attributes = _item_attributes(request, "request item")
         jev_items = jev_state.get("items")
         if not isinstance(jev_items, list):

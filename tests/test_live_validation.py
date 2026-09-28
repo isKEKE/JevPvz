@@ -129,7 +129,7 @@ class LiveValidationLogicTests(unittest.TestCase):
         self.assertIsNone(png)
 
     def test_sun_filter_accepts_only_safe_types_4_5_6(self):
-        state = sample_state(items=[sun(1, 4), sun(2, 5), sun(3, 6), sun(4, 2), sun(5, 4, x=10), sun(6, 4, interpretation="unknown")])
+        state = sample_state(items=[sun(1, 4), sun(2, 5), sun(3, 6), sun(4, 2), sun(5, 4, y=20), sun(6, 4, interpretation="unknown")])
         self.assertEqual([item["id"] for item in _safe_sun_items(state)], [1, 2, 3])
 
     def test_collect_requires_strictly_more_than_50(self):

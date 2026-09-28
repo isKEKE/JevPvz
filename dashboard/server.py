@@ -11,12 +11,14 @@ from typing import Any, Callable
 
 from state.builder import capture_state
 from state.projection import project_jev_state
+from jev.trace import SCHEMA_VERSION_V2, trace_schema_version
 
 
 STATIC_DIR = Path(__file__).with_name("static")
 STATIC_FILES = {
     "/static/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/static/state-page.js": ("state-page.js", "text/javascript; charset=utf-8"),
+    "/static/jev-page.js": ("jev-page.js", "text/javascript; charset=utf-8"),
     "/static/style.css": ("style.css", "text/css; charset=utf-8"),
 }
 
@@ -81,16 +83,93 @@ class StatePoller:
             self._stop_event.wait(self.interval_seconds)
 
 
+class TraceFileReader:
+    """Read only the last complete JSONL events from one configured path.
+
+    Both Trace schemas are read: schema-1 legacy cycles keep their original
+    payload shape ``{"status", "events"}``, while a schema-2 runtime trace adds
+    ``"schema_version": 2`` so the page can present branch/request/execution
+    events separately. Records are validated against their own version and a file
+    that changes version mid-run is reported as an error, so a legacy cycle is
+    never displayed as a concurrent branch event. The path is always the one the
+    Dashboard was started with; no request may name another file.
+    """
+
+    def __init__(self, path: str | Path | None, *, limit: int = 100):
+        if limit < 1:
+            raise ValueError("Trace event limit must be positive.")
+        self.path = Path(path) if path is not None else None
+        self.limit = limit
+
+    def read(self) -> dict[str, Any]:
+        if self.path is None:
+            return {"status": "unconfigured", "events": []}
+        try:
+            with self.path.open("rb") as stream:
+                stream.seek(0, 2)
+                end = stream.tell()
+                if end == 0:
+                    return {"status": "empty", "events": []}
+                data = self._read_tail(stream, end)
+        except FileNotFoundError:
+            return {"status": "missing", "events": []}
+        except OSError:
+            return {"status": "error", "events": []}
+
+        events: list[dict[str, Any]] = []
+        version: int | None = None
+        for line in data.splitlines():
+            if not line:
+                continue
+            try:
+                event = json.loads(line.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return {"status": "error", "events": []}
+            line_version = trace_schema_version(event)
+            if line_version is None or (version is not None and line_version != version):
+                return {"status": "error", "events": []}
+            version = line_version
+            events.append(event)
+        if not events:
+            return {"status": "empty", "events": []}
+        payload: dict[str, Any] = {"status": "ok", "events": events[-self.limit:]}
+        if version == SCHEMA_VERSION_V2:
+            payload["schema_version"] = SCHEMA_VERSION_V2
+        return payload
+
+    def _read_tail(self, stream: Any, end: int) -> bytes:
+        position = end
+        chunks: list[bytes] = []
+        newline_count = 0
+        while position > 0 and newline_count <= self.limit:
+            size = min(65_536, position)
+            position -= size
+            stream.seek(position)
+            chunk = stream.read(size)
+            chunks.insert(0, chunk)
+            newline_count += chunk.count(b"\n")
+        data = b"".join(chunks)
+        if position > 0:
+            first_newline = data.find(b"\n")
+            data = data[first_newline + 1:] if first_newline >= 0 else b""
+        if data and not data.endswith(b"\n"):
+            last_newline = data.rfind(b"\n")
+            data = data[:last_newline + 1] if last_newline >= 0 else b""
+        return data
+
+
 def create_dashboard_server(
     poller: StatePoller,
     *,
     host: str = "127.0.0.1",
     port: int = 8765,
+    jev_trace_file: str | Path | None = None,
 ) -> HTTPServer:
     """Create a server with an allowlisted set of read-only GET routes."""
 
     if host != "127.0.0.1":
         raise ValueError("The dashboard may only bind to 127.0.0.1.")
+    trace_reader = TraceFileReader(jev_trace_file)
 
     class DashboardHandler(BaseHTTPRequestHandler):
         server_version = "PvZStateDashboard/1"
@@ -104,11 +183,18 @@ def create_dashboard_server(
                 payload = json.dumps(project_jev_state(poller.latest()), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
                 self._send(200, payload, "application/json; charset=utf-8")
                 return
+            if self.path == "/api/jev-trace":
+                payload = json.dumps(trace_reader.read(), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                self._send(200, payload, "application/json; charset=utf-8")
+                return
             if self.path == "/":
                 self._send_file(STATIC_DIR / "index.html", "text/html; charset=utf-8")
                 return
             if self.path == "/state":
                 self._send_file(STATIC_DIR / "state.html", "text/html; charset=utf-8")
+                return
+            if self.path == "/jev":
+                self._send_file(STATIC_DIR / "jev.html", "text/html; charset=utf-8")
                 return
             resource = STATIC_FILES.get(self.path)
             if resource:
@@ -139,7 +225,8 @@ def create_dashboard_server(
                 pass
 
         def log_message(self, fmt: str, *args: Any) -> None:
-            print("dashboard: " + fmt % args)
+            status = args[1] if len(args) > 1 else "request"
+            print(f"dashboard: {self.command} response {status}")
 
     try:
         return HTTPServer((host, port), DashboardHandler)
@@ -147,10 +234,15 @@ def create_dashboard_server(
         raise OSError(f"Could not start dashboard at http://{host}:{port}/: {exc}") from exc
 
 
-def serve_dashboard(*, port: int = 8765, poll_interval_ms: int = 200) -> None:
+def serve_dashboard(
+    *,
+    port: int = 8765,
+    poll_interval_ms: int = 200,
+    jev_trace_file: str | Path | None = None,
+) -> None:
     """Serve the dashboard only on loopback until interrupted."""
     poller = StatePoller(interval_ms=poll_interval_ms)
-    server = create_dashboard_server(poller, port=port)
+    server = create_dashboard_server(poller, port=port, jev_trace_file=jev_trace_file)
     poller.start()
     try:
         print(f"PvZ State dashboard listening at http://127.0.0.1:{port}/")

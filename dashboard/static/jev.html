@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#183a2b">
+  <title>JEV 时间线 · PvZ 只读监视器</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/jev-page.js" defer></script>
+</head>
+<body class="jev-page">
+  <header class="topbar">
+    <div class="brand-mark" aria-hidden="true">✿</div>
+    <div class="brand-copy"><p class="eyebrow">READ ONLY · JEV RUNTIME</p><h1>JEV 时间线</h1></div>
+    <nav class="page-nav" aria-label="页面导航">
+      <a href="/">草坪状态</a><a href="/state">State 观察</a><a class="active" href="/jev">JEV 时间线</a>
+    </nav>
+  </header>
+  <main class="jev-main">
+    <section class="panel jev-status-panel" aria-live="polite">
+      <div><p class="eyebrow">JSONL TRACE</p><h2 id="trace-status-title">正在读取时间线</h2></div>
+      <span id="trace-event-count" class="state-badge unavailable">等待数据</span>
+    </section>
+    <p id="trace-status-detail" class="jev-status-detail" role="status">正在连接只读 Trace 接口。</p>
+    <section id="jev-timeline" class="jev-timeline" aria-label="JEV 决策周期时间线"></section>
+  </main>
+  <footer>只读时间线 · 本页不控制 Loop 或游戏动作</footer>
+</body>
+</html>

@@ -138,9 +138,15 @@ ACTION_WINDOW_PROFILE = {
         "vertical_spacing": 100.0,
     },
     "shovel_center": (659.0, 40.0),
+    # Item click region. Its x lower bound is the client-area left edge (0), so an
+    # item that drifts onto the lawn's left edge / the mower strip is still
+    # clickable; its y lower bound is the lawn's top edge (first cell centre y 130
+    # minus half the 100px row pitch = 80), which keeps items inside the lawn and
+    # out of the seed-bar UI above it. Items outside the region are rejected before
+    # any input is sent.
     "item_coordinates": {
         "interpretations": ("i32_pixel_candidate", "f32_pixel_candidate"),
         "origin": (0.0, 0.0),
-        "bounds": (80.0, 80.0, 800.0, 600.0),
+        "bounds": (0.0, 80.0, 800.0, 600.0),
     },
 }

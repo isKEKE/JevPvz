@@ -1,13 +1,18 @@
 import unittest
 import json
+import copy
 from contextlib import redirect_stdout
 from io import StringIO
 from unittest.mock import patch
 
-from state.builder import build_state, capture_state
+from dataclasses import replace
+
+from state.builder import build_state, capture_state, evaluate_decision_readiness, reset_default_session
 from state.schema import to_json_record
 from state.projection import project_jev_state
-from runtime.process import TargetNotRunningError
+from runtime.process import ProcessDiscoveryError, TargetNotRunningError
+from jev.trace import build_trace_event
+from test_jev_trace import sample_cycle
 
 
 def domain(entities):
@@ -57,7 +62,88 @@ def sample(*, plants=None, zombies=None, items=None):
     }
 
 
+def decision_ready_sample():
+    raw = sample()
+    raw["candidates"]["game_progress"]["raw_candidate_fields"] = {
+        "scene": {"value": 3},
+        "mode": {"value": 0},
+        "background": {"value": 0},
+        "pause_flag": {"value": 0},
+        "won_flag": {"value": 0},
+        "level": {"value": 1},
+        "current_wave": {"value": 0},
+        "total_waves": {"value": 10},
+    }
+    return raw
+
+
 class StateBuilderTests(unittest.TestCase):
+
+    def test_decision_ready_accepts_complete_supported_provisional_sample(self):
+        record = build_state(decision_ready_sample()).to_json_record()
+        self.assertEqual(record["status"], "ok")
+        self.assertTrue(record["valid"])
+        self.assertEqual(record["game"]["phase"], "playing")
+        self.assertFalse(record["game"]["paused"])
+        self.assertEqual(record["availability"]["sun_balance"], "provisional")
+        self.assertEqual(record["availability"]["board.occupancy"], "provisional")
+        self.assertEqual(record["plants"], [])
+        self.assertEqual(record["zombies"], [])
+        self.assertEqual(record["items"], [])
+        self.assertTrue(record["decision_ready"])
+
+    def test_decision_ready_fails_closed_for_each_gate_condition(self):
+        baseline = build_state(decision_ready_sample()).to_json_record()
+        mutations = (
+            lambda state: state.update(valid=False),
+            lambda state: state.update(status="error"),
+            lambda state: state["game"].update(phase="menu"),
+            lambda state: state["game"].update(paused=True),
+            lambda state: state["board"].update(cells=None),
+            lambda state: state.update(cards=None),
+            lambda state: state.update(zombies=None),
+            lambda state: state.update(items=None),
+        )
+        for mutate in mutations:
+            candidate = copy.deepcopy(baseline)
+            mutate(candidate)
+            self.assertFalse(evaluate_decision_readiness(candidate))
+
+    def test_decision_ready_requires_available_or_provisional_required_fields(self):
+        baseline = build_state(decision_ready_sample()).to_json_record()
+        for key in (
+            "game.phase", "game.mode", "game.background", "game.paused", "sun_balance",
+            "board.occupancy", "cards", "cards.cost", "cards.cooldown_ready", "cards.usable",
+            "plants", "zombies", "zombies.hp", "zombies.distance_to_house_cells",
+            "lanes.nearest_zombie_distance_to_house_cells", "items", "items.type", "items.position",
+        ):
+            candidate = copy.deepcopy(baseline)
+            candidate["availability"][key] = "unavailable"
+            self.assertFalse(evaluate_decision_readiness(candidate), key)
+            candidate["availability"][key] = "error"
+            self.assertFalse(evaluate_decision_readiness(candidate), key)
+
+    def test_decision_ready_rejects_malformed_decision_projection(self):
+        baseline = build_state(decision_ready_sample()).to_json_record()
+        malformed = copy.deepcopy(baseline)
+        malformed["board"]["cells"] = [[None] * 9]
+        self.assertFalse(evaluate_decision_readiness(malformed))
+
+        malformed = copy.deepcopy(baseline)
+        malformed["cards"] = [{"slot": 0, "type_code": 1}]
+        self.assertFalse(evaluate_decision_readiness(malformed))
+
+        malformed = copy.deepcopy(baseline)
+        malformed["game"]["mode"] = "unsupported"
+        self.assertFalse(evaluate_decision_readiness(malformed))
+
+        malformed = copy.deepcopy(baseline)
+        malformed["game"]["background"] = "pool"
+        self.assertFalse(evaluate_decision_readiness(malformed))
+
+        malformed = copy.deepcopy(baseline)
+        malformed["lanes"] = []
+        self.assertFalse(evaluate_decision_readiness(malformed))
 
     def test_snapshot_cli_selects_jev_and_keeps_all_as_default(self):
         from main import build_parser, run_snapshot
@@ -556,6 +642,85 @@ class StateBuilderTests(unittest.TestCase):
         self.assertTrue(record["valid"])
         self.assertEqual(record["retry_count"], 1)
         self.assertGreaterEqual(record["sample_sequence"], 1)
+
+
+class _FixedSession:
+    def __init__(self, sample_pair):
+        self._sample_pair = sample_pair
+
+    def read(self):
+        return self._sample_pair
+
+
+class _RaisingSession:
+    def __init__(self, exc):
+        self._exc = exc
+
+    def read(self):
+        raise self._exc
+
+
+class CaptureSessionTests(unittest.TestCase):
+
+    def tearDown(self):
+        reset_default_session()
+
+    def test_injected_session_source_carries_identity_verified_at_utc(self):
+        source = {"pid": 4242, "identity_verified_at_utc": "2026-01-01T00:00:00.001Z"}
+        session = _FixedSession((decision_ready_sample(), source))
+
+        record = capture_state(session=session)
+
+        self.assertEqual(record["schema_version"], 1)
+        self.assertTrue(record["valid"])
+        self.assertIn("identity_verified_at_utc", record["source"])
+        self.assertEqual(record["source"]["identity_verified_at_utc"], "2026-01-01T00:00:00.001Z")
+
+    def test_projection_omits_source_and_identity_time(self):
+        source = {"identity_verified_at_utc": "2026-01-01T00:00:00.001Z"}
+        record = capture_state(session=_FixedSession((decision_ready_sample(), source)))
+
+        projected = project_jev_state(record)
+
+        self.assertNotIn("source", projected)
+        self.assertNotIn("identity_verified_at_utc", json.dumps(projected))
+
+    def test_trace_event_omits_source_and_identity_time(self):
+        source = {"identity_verified_at_utc": "2026-01-01T00:00:00.001Z"}
+        record = capture_state(session=_FixedSession((decision_ready_sample(), source)))
+        self.assertIn("identity_verified_at_utc", record["source"])
+
+        cycle = replace(sample_cycle(), all_state=record, next_observation=record)
+        text = json.dumps(build_trace_event(cycle, run_id="x"))
+
+        self.assertNotIn("identity_verified_at_utc", text)
+        self.assertNotIn('"source"', text)
+
+    def test_raw_reader_injection_bypasses_the_default_session(self):
+        with patch("state.builder._default_session", side_effect=AssertionError("default session touched")):
+            record = capture_state(raw_reader=lambda: (sample(), {"pid": 4242, "exe_sha256": "marker"}))
+
+        self.assertEqual(record["source"]["pid"], 4242)
+        self.assertEqual(record["source"]["exe_sha256"], "marker")
+        self.assertNotIn("identity_verified_at_utc", record["source"])
+
+    def test_target_not_running_from_session_becomes_disconnected(self):
+        session = _RaisingSession(TargetNotRunningError("No running process found for target."))
+
+        record = capture_state(session=session)
+
+        self.assertEqual(record["status"], "disconnected")
+        self.assertFalse(record["valid"])
+        self.assertNotIn("identity_verified_at_utc", record["source"])
+
+    def test_process_discovery_error_from_session_becomes_error(self):
+        session = _RaisingSession(ProcessDiscoveryError("Ambiguous target."))
+
+        record = capture_state(session=session)
+
+        self.assertEqual(record["status"], "error")
+        self.assertFalse(record["valid"])
+        self.assertNotIn("identity_verified_at_utc", record["source"])
 
 
 if __name__ == "__main__":

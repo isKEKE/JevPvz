@@ -12,7 +12,12 @@
 - `state/` normalizes raw reads into the schema-v1 State contract and attaches
   availability/evidence to facts and conservative derivations.
 - `dashboard/` serves a local read-only lawn dashboard and State observer. Both
-  API profiles are derived from the same `StatePoller.latest` sample.
+  API profiles are derived from the same `StatePoller.latest` sample. Its JEV
+  Trace route reads only the file the server was started with, and understands
+  both the schema-1 legacy cycle trace and the schema-2 runtime trace.
+- `jev/` owns the asynchronous JEV runtime: the observation loop, the layered
+  strategy signals, the typed question/merge layer, the single dispatch
+  scheduler, and the versioned Trace event contract.
 - `actions/` validates one semantic action, maps supported client points through the live HWND, sends guarded system mouse input, and confirms the result with a new State sample.
 - The root `main.py` owns the user-facing command entry point.
 
@@ -79,8 +84,137 @@ plant. For the standard daytime lawn, `distance_to_house_px` uses the Human
 calibrated house line at X=0; `distance_to_house_cells` maps X to a 0–8
 house-relative column index using the 80px cell pitch. Per-lane summaries
 include both minima. The former `progress_to_house` field is removed. Other
-backgrounds remain unavailable. `decision_ready` remains false while other
-required evidence is missing.
+backgrounds remain unavailable.
+
+`decision_ready` is true only when the State is valid with `status == "ok"`,
+the game is playing and unpaused, the JEV projection contains a valid 5×9
+decision board, and the required game, sun, board, card, plant, zombie, lane,
+and item fields have `available` or `provisional` evidence. A required field
+with `unavailable` or `error` evidence, a missing value, or malformed projected
+structure keeps the gate false. Evidence-backed empty entity arrays are valid;
+the gate means JEV may decide, not that any particular action will pass the
+ActionBoundary.
+
+## Capture session and identity guarantee
+
+State capture holds one already verified target process for the lifetime of a
+sampling session instead of re-discovering and fully re-verifying it on every
+sample. At establishment the session resolves the target process and runs the
+full executable identity check once, then keeps the read-only process handle
+open for the whole session.
+
+Per sample the session only repeats the cheap guard: target liveness, the main
+module path still matching the locked executable, and `main_module_base` for
+the current module base. This replaces per-sample process enumeration and
+on-disk SHA-256 hashing. Two independent re-verification cycles run against the
+held handle: the disk identity is re-verified every 1.0 s, and process
+uniqueness is re-resolved every 30.0 s. Because uniqueness is re-checked only
+on that 30.0 s cycle, a second same-name/same-path process is detected within a
+window of at most 30 s; for the rest of the window the session keeps operating
+on the originally verified instance.
+
+Holding the handle makes PID reuse structurally impossible: memory reads always
+target the process that was verified at establishment. Process exit is still
+detected, through the guard and the `GetExitCodeProcess` check that real memory
+reads already perform. Identity/liveness failures fail the current sample and
+drop the session, so the next sample re-resolves from scratch; data-read
+failures leave the session and its identity intact.
+
+`source.identity_verified_at_utc` records the time of the most recent
+*successful* verification, in UTC with millisecond precision. It names when the
+held identity was last confirmed; it does **not** claim that the sample itself
+was verified at capture time, and `source.pid`/`source.exe_sha256` likewise no
+longer imply per-sample verification. A connection-unavailable sample carries
+no `identity_verified_at_utc`. The field is deliberately excluded from both the
+JEV projection and the Trace, so their existing contracts are unchanged.
+
+## JEV runtime loop
+
+`jev/` is the asynchronous decision runtime. Responsibilities are split so every
+layer has one job:
+
+- **Observation** (`jev/loop.py`): one Observer task captures one All/JEV State
+  pair after another on a controlled worker thread, projects it, and publishes
+  the newest immutable pair through `SnapshotStore`. Continuous observation is
+  the default; `--interval-ms` only paces the *start* of an observation and never
+  paces JEV requests or the network timeout. Only the newest pair is kept, and a
+  pair is usable for a decision job only while `decision_ready` is true and its
+  age is inside the recorded limit.
+- **Decision**: the collect worker sends one shared request with independent
+  collection Noul (only when there are collectable items), construction intent
+  (keep/replace/cancel), and next construction type answers. Empty items still
+  permit the management questions.
+  Inputs contain actual counts, budget/cards, board, plants, zombies, per-lane
+  observed counts and distances, per-lane own-side composition
+  (`lane_composition`: `resource`/`attacker`/`defender` counts per row, explicit
+  rows at zero, `null` when plants are unknown), the board's factual column
+  direction (`house_side_col` 0, `zombie_side_col` = highest column, matching the
+  executor's `first_cell_center + col * horizontal_spacing` geometry),
+  `cards[].role` from the catalog (`null` when unknown), waves guarded by matching
+  All State availability,
+  catalog capabilities, current model intent and the last actual action result.
+  These are facts and semantics only: no prescribed lineup, economic size, layout,
+  column recommendation, quota, phase policy or ideal deficit is supplied.
+  Items contain only type_code/type_name/count; identity stays local.
+  A positive collection gate authorizes all valid IDs frozen from that source
+  sample, consumed serially; new IDs require another answer. An affirmative answer
+  that arrives while a batch is still being consumed is held as the single latest
+  unauthorized batch (a later answer replaces it and the replaced one is recorded),
+  then started when the active batch ends under the same 5 s authorization window
+  measured from the moment it was accepted -- never renewed by queueing -- and
+  discarded with a recorded reason if it is already past it. The collection gate
+  is the reviewable fixed anchor ``COLLECT_ACT_THRESHOLD = 0.5`` in
+  ``jev/questions.py``, decoupled from the P02 ``JEV_NOUL_CANDIDATE_THRESHOLD``.
+  Plant decisions ask only a complete legal placement Choice: the model's own
+  discard option expresses waiting (strictly only when its probability beats the
+  discard option), there is no absolute plant gate, and the selected option is
+  taken by argmax with no local lane reranking. At `wave == 0` the pre-level
+  zombie transient is excluded from the PlantBranch change key (a missing or
+  malformed wave stays conservative), while the zombie facts still reach the
+  model.
+- **Scheduling**: the existing two workers share one non-preemptible executor.
+  Urgency is mechanical: plant proposals are low priority and ready actions run
+  FIFO otherwise.
+  Source domain, intent content version, target, current actual resources,
+  identity, stop and TTL are checked before dispatch. Invalid/stale proposals
+  are rejected without substituting another model target. Intent is context,
+  never standalone action authorization. No sun reservation or forecast exists.
+  A collect request carries its own bounded confirmation budget
+  (`COLLECT_CONFIRMATION_TIMEOUT_MS = 2500` in `jev/scheduler.py`), because an
+  unconfirmed collect click holds the only executor until its wait elapses;
+  plant and shovel requests keep the executor's own default.
+- **Execution** (`actions/`): the unchanged `ActionBoundary` performs one complete
+  input transaction (select -> click -> confirm) and returns an `ActionResult`.
+
+Late answers are voided by source pair, not by the clock: a stop or identity
+change bumps the epoch and invalidates every in-flight job and pending proposal,
+and a job whose branch key changed while it was in flight is superseded and
+rebuilt from the newest pair. A rising `sample_sequence` alone never expires a
+result; only an unchanged key past the recorded deadline does.
+
+### Trace schema
+
+The runtime writes a **schema-2** JSONL trace with one writer and a monotonic
+`event_sequence`: `job_start`, `request_result`, `proposal_discarded`,
+`action_result`, `job_end`, and `runtime_stop`, linked by
+`job_id`/`stage_id`/`request_id`/`execution_id`/`branch_id`. A job's group
+records the age of the source sample, the API latency, the queue delay, the
+wait/discard reason, and the actual shared request input. Collection records its
+single Noul and authorized count; management records keep/replace/cancel and
+construction type. Plant records the offered
+placement distribution, the selected option without reranking, and its
+``best_option``/``best_probability``/``discard_probability``/``margin`` facts.
+Model intent content versions and source job links connect these decisions to
+actual executions. The per-lane/economy Noul gates and the collected
+``needed_rows``/reranking fields are historical records: they are no longer part
+of any runtime question set and no longer act as policy. Target Choice uses
+argmax without a per-entry confidence threshold on the path. Every job writes a bounded group rather than one record per observation,
+and the trace never contains the raw All State, a raw SDK response, credentials,
+or any reserved or predicted income. `job_end` follows decision-completion order
+while `action_result` follows the actual execution order, and the Dashboard shows
+both separately. Schema-1 legacy cycle files stay readable and are validated
+against their own shape, so an old cycle record is never presented as a
+concurrent branch event.
 
 ## Read-only boundary
 
@@ -102,7 +236,11 @@ is 64-bit.
 fixed 800×600, 96-DPI profile. It does not gate on candidate cooldown fields;
 it waits for a new plant ID in the requested cell.
 `collect_item` maps the requested State item ID's resolved pixel candidate
-directly into client space and succeeds only when that same ID disappears.
+directly into client space and succeeds only when that same ID disappears. A
+candidate outside the configured item region (x and y from 40 client points in the
+fixed 800×600 profile, so the left half of the first lawn column and an item still
+falling through the top of the client area both stay clickable) is rejected with
+its resolved point and the region bounds as evidence, and no input is sent.
 `shovel_cell` selects the native shovel once, clicks the cell once, and reports
 the plant IDs that actually disappeared. A caller must submit another request
 to remove another layer.
@@ -124,6 +262,8 @@ balance or cost, start the game, or change foreground focus.
 ## Environment
 
 The project pins Python 3.12.13 in `.python-version` and `pyproject.toml`.
-`uv.lock` records the only runtime third-party dependency, `pywin32`. Recreate
+`uv.lock` records `pywin32` for Windows access, `python-dotenv` for environment
+loading, and `typesafe-sdk` for typed asynchronous JEV requests, together with
+the SDK dependencies. Recreate
 the environment with `uv sync`; run one identity and memory probe with
 `uv run python main.py probe`.

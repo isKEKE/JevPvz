@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import threading
 from datetime import datetime, timezone
 from itertools import count
 from typing import Any, Callable, Mapping
@@ -11,16 +12,11 @@ from configs.pvz_1051 import LAWN_GEOMETRY, TARGET_IDENTITY
 from configs.plant_catalog import plant_info
 from configs.zombie_catalog import zombie_name
 from configs.item_catalog import item_name
-from game.reader import read_raw_snapshot
-from runtime.memory import ReadOnlyMemory
-from runtime.process import (
-    ProcessDiscoveryError,
-    TargetNotRunningError,
-    locate_target_process,
-    main_module_base,
-    verify_target_identity,
-)
+from runtime.memory import MemoryAccessError
+from runtime.process import ProcessDiscoveryError, TargetNotRunningError
+from runtime.session import TargetSession
 from .schema import StateSnapshot
+from .projection import project_jev_state
 
 
 _SEQUENCES = count(1)
@@ -238,6 +234,167 @@ def _integer(value: Any) -> bool:
 
 def _finite_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+_DECISION_REQUIRED_AVAILABILITY = (
+    "game.phase",
+    "game.mode",
+    "game.background",
+    "game.paused",
+    "sun_balance",
+    "board.occupancy",
+    "cards",
+    "cards.cost",
+    "cards.cooldown_ready",
+    "cards.usable",
+    "plants",
+    "zombies",
+    "zombies.hp",
+    "zombies.distance_to_house_cells",
+    "lanes.nearest_zombie_distance_to_house_cells",
+    "items",
+    "items.type",
+    "items.position",
+)
+_DECISION_ACCEPTED_EVIDENCE = frozenset({"available", "provisional"})
+
+
+def evaluate_decision_readiness(state: Mapping[str, Any]) -> bool:
+    """Return whether one normalized sample is complete enough for a JEV decision."""
+    if not isinstance(state, Mapping):
+        return False
+    if state.get("valid") is not True or state.get("status") != "ok":
+        return False
+
+    game = state.get("game")
+    availability = state.get("availability")
+    if not isinstance(game, Mapping) or not isinstance(availability, Mapping):
+        return False
+    if (
+        game.get("phase") != "playing"
+        or game.get("paused") is not False
+        or not _integer(game.get("mode_code"))
+        or _MODE_NAMES.get(game.get("mode_code")) != game.get("mode")
+        or not _integer(game.get("background_code"))
+        or _BACKGROUND_NAMES.get(game.get("background_code")) != game.get("background")
+    ):
+        return False
+    if any(availability.get(key) not in _DECISION_ACCEPTED_EVIDENCE for key in _DECISION_REQUIRED_AVAILABILITY):
+        return False
+    if not _integer(state.get("sun_balance")) or state["sun_balance"] < 0:
+        return False
+
+    # Check the actual decision-facing projection: unsupported board layouts
+    # project cells as null even when All State has a provisional grid.
+    try:
+        jev = project_jev_state(state)
+    except (TypeError, ValueError):
+        return False
+    board = jev.get("board")
+    cells = board.get("cells") if isinstance(board, Mapping) else None
+    if (
+        not isinstance(cells, list)
+        or len(cells) != 5
+        or any(not isinstance(row, list) or len(row) != 9 for row in cells)
+        or any(
+            cell is not None
+            and type(cell) is not bool
+            and not (isinstance(cell, str) and cell.startswith("plant:") and len(cell) > len("plant:"))
+            for row in cells
+            for cell in row
+        )
+    ):
+        return False
+
+    cards = jev.get("cards")
+    if not isinstance(cards, list):
+        return False
+    for card in cards:
+        type_code = card.get("type_code") if isinstance(card, Mapping) else None
+        info = plant_info(type_code)
+        if (
+            not isinstance(card, Mapping)
+            or not _integer(card.get("slot"))
+            or not 0 <= card["slot"] <= 9
+            or not _integer(card.get("type_code"))
+            or card["type_code"] < 0
+            or info is None
+            or card.get("type_name") != info.name
+            or not _integer(card.get("cost"))
+            or card["cost"] < 0
+            or type(card.get("cooldown_ready")) is not bool
+            or type(card.get("usable")) is not bool
+        ):
+            return False
+
+    plants = jev.get("plants")
+    if not isinstance(plants, list) or any(
+        not isinstance(plant, Mapping)
+        or not _integer(plant.get("type_code"))
+        or plant_info(plant.get("type_code")) is None
+        or plant.get("type_name") != plant_info(plant.get("type_code")).name
+        or not _integer(plant.get("row"))
+        or not 0 <= plant["row"] < 5
+        or not _integer(plant.get("col"))
+        or not 0 <= plant["col"] < 9
+        for plant in plants
+    ):
+        return False
+
+    zombies = jev.get("zombies")
+    if not isinstance(zombies, list) or any(
+        not isinstance(zombie, Mapping)
+        or not _integer(zombie.get("type_code"))
+        or zombie["type_code"] < 0
+        or not isinstance(zombie.get("type_name"), str)
+        or not zombie["type_name"]
+        or not _integer(zombie.get("row"))
+        or not 0 <= zombie["row"] < 5
+        or not _finite_number(zombie.get("x"))
+        or not _finite_number(zombie.get("y"))
+        or not _integer(zombie.get("hp"))
+        or zombie["hp"] < 0
+        or not _integer(zombie.get("distance_to_house_cells"))
+        or not 0 <= zombie["distance_to_house_cells"] <= 8
+        for zombie in zombies
+    ):
+        return False
+
+    lanes = jev.get("lanes")
+    if (
+        not isinstance(lanes, list)
+        or len(lanes) != 5
+        or any(
+            not isinstance(lane, Mapping)
+            or not _integer(lane.get("row"))
+            or lane.get("row") != row
+            or not _integer(lane.get("zombie_count"))
+            or lane["zombie_count"] < 0
+            or (
+                lane.get("nearest_zombie_distance_to_house_cells") is not None
+                and (
+                    not _integer(lane.get("nearest_zombie_distance_to_house_cells"))
+                    or not 0 <= lane["nearest_zombie_distance_to_house_cells"] <= 8
+                )
+            )
+            for row, lane in enumerate(lanes)
+        )
+    ):
+        return False
+
+    items = jev.get("items")
+    if not isinstance(items, list) or any(
+        not isinstance(item, Mapping)
+        or not _integer(item.get("type_code"))
+        or item["type_code"] < 0
+        or not isinstance(item.get("type_name"), str)
+        or not item["type_name"]
+        or not _finite_number(item.get("x"))
+        or not _finite_number(item.get("y"))
+        for item in items
+    ):
+        return False
+    return True
 
 
 def _distance_to_house_cells(x: Any, geometry: Mapping[str, Any]) -> int | None:
@@ -748,24 +905,52 @@ def build_state(
     if availability["items.position"] == "unavailable" and items is not None:
         record["missing_fields"].append("items.position")
         record["missing_fields"] = sorted(set(record["missing_fields"]))
+    record["decision_ready"] = evaluate_decision_readiness(record)
     return StateSnapshot(record)
 
 
+_DEFAULT_SESSION_LOCK = threading.Lock()
+_DEFAULT_SESSION: TargetSession | None = None
+
+
+def _default_session() -> TargetSession:
+    """Return the module-level capture session, establishing it on first use."""
+    global _DEFAULT_SESSION
+    with _DEFAULT_SESSION_LOCK:
+        if _DEFAULT_SESSION is None:
+            _DEFAULT_SESSION = TargetSession()
+        return _DEFAULT_SESSION
+
+
+def reset_default_session() -> None:
+    """Drop the cached default session so the next capture re-establishes it."""
+    global _DEFAULT_SESSION
+    with _DEFAULT_SESSION_LOCK:
+        session = _DEFAULT_SESSION
+        _DEFAULT_SESSION = None
+    if session is not None:
+        try:
+            session.close()
+        except MemoryAccessError:
+            pass
+
+
 def _capture_raw() -> tuple[dict[str, Any], dict[str, Any]]:
-    process = locate_target_process(str(TARGET_IDENTITY["path"]))
-    identity = verify_target_identity(process, TARGET_IDENTITY)
-    module_base = main_module_base(process.pid, TARGET_IDENTITY["path"])
-    with ReadOnlyMemory(process.pid) as memory:
-        raw = read_raw_snapshot(memory, module_base)
-    source = identity.as_dict()
-    source.update({"profile": "pvz-1.0.0.1051", "exe_sha256": identity.sha256})
-    return raw, source
+    return _default_session().read()
 
 
-def capture_state(raw_reader: Callable[[], tuple[dict[str, Any], dict[str, Any]]] | None = None) -> dict[str, Any]:
+def capture_state(
+    raw_reader: Callable[[], tuple[dict[str, Any], dict[str, Any]]] | None = None,
+    session: TargetSession | None = None,
+) -> dict[str, Any]:
     """Capture one sample, retrying once when required data is inconsistent."""
     sequence = next(_SEQUENCES)
-    reader = raw_reader or _capture_raw
+    if raw_reader is not None:
+        reader = raw_reader
+    elif session is not None:
+        reader = session.read
+    else:
+        reader = _capture_raw
     try:
         raw, source = reader()
         first = build_state(raw, source=source, sequence=sequence)

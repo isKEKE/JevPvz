@@ -1,0 +1,19 @@
+# Plant layout experience -- one guidance per line, edit freely.
+# Lines starting with # and blank lines are ignored.
+# Reference only state fields that exist in the plant request state
+# (state.board, state.observed_lanes, ...), otherwise the acceptance test fails.
+# Threat labels: threat = none|unknown|low|medium|high|critical|undefended (undefended = zombies present, no attacker in that lane) ;
+# crowd = none|single|pair|small_group|horde ; composition = zombie type names in that lane ;
+# proximity = at_the_door|very_close|close|midfield|far ; armor = armored|none ; engagement = ranged|melee|none.
+# English is recommended (the rest of the instructions is English).
+
+1. Resource plants belong in columns 0 and 1, spread across lanes.
+2. When a lane's threat is critical or undefended, defend that lane before expanding economy.
+3. When two or more lanes are high or critical, spread blockers across them.
+4. Put a durable blocker on the zombie side of the plants it protects.
+5. Against an armored zombie, block in front of it.
+6. When adding an attacker, prefer the lane with the highest threat.
+7. When every lane is none, unknown or low, keep expanding economy in columns 0 and 1.
+8. With sun 100+ and no critical lane, add a resource plant in the lowest-threat lane.
+9. Plant ranged attackers early, before their lane has a zombie, so they are already firing when one arrives.
+10. Prefer an attacker over a defender: a defender buys time but kills nothing.
