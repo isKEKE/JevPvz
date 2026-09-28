@@ -4,6 +4,8 @@
 
 在 Windows 上读取《植物大战僵尸》状态、查看本机仪表盘，并可通过语义动作或 TypeSafe JEV 决策循环操作游戏。
 
+**建议先读 [JEV 能力报告](docs/jev-capability-analysis.md)。** 它讲清楚了实机对局测出了什么、策略卡在哪里，以及 JEV 在整套系统中的位置。之后再按本 README 配置和运行项目。
+
 > 仅支持 x86 版 Plants vs. Zombies `1.0.0.1051`，程序身份须与 `configs/pvz_1051.py` 的版本和 SHA-256 一致。`action` 和 `jev-loop` **会操作游戏**；`probe`、`snapshot` 和 `serve` 只读。游戏可以在后台运行。
 
 ## 快速开始
@@ -70,6 +72,7 @@ uv run python main.py action --action-json '{"action":"shovel_cell","row":0,"col
 uv run python -m unittest discover -s tests -p "test_*.py"
 ```
 
+- [JEV 能力报告](docs/jev-capability-analysis.md)：实机实验的发现与边界，建议优先阅读。
 - [详细使用说明](docs/usage.md)：状态观察、仪表盘、动作、JEV、Python API 与实机验收。
 - [架构文档](docs/architecture.md)：模块职责、State 契约及 Runtime。
 - [内存字段文档](docs/memory-map.md)：字段来源与证据等级。

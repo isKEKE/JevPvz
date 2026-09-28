@@ -4,6 +4,8 @@ English | [简体中文](README.zh-CN.md)
 
 Read Plants vs. Zombies game state on Windows, inspect it in a local dashboard, and optionally control the game through semantic actions or a TypeSafe JEV decision loop.
 
+**Start with the [JEV capability report](docs/jev-capability-analysis.en.md).** It explains what the live games showed, where the strategy struggled, and how JEV fits into the larger system. Then use this README for setup and commands.
+
 > Supports only the x86 Plants vs. Zombies `1.0.0.1051` executable. Its version and SHA-256 must match `configs/pvz_1051.py`. `action` and `jev-loop` **send input to the game**; `probe`, `snapshot`, and `serve` are read-only. The game may run in the background.
 
 ## Quick start
@@ -70,6 +72,7 @@ Replace the example `item_id` with an ID from the current State. The result `sta
 uv run python -m unittest discover -s tests -p "test_*.py"
 ```
 
+- [JEV capability report](docs/jev-capability-analysis.en.md): findings and limits of the live-game experiment; recommended first read.
 - [Detailed usage guide (Chinese)](docs/usage.md): State observation, dashboard, actions, JEV, Python API, and live validation.
 - [Architecture](docs/architecture.md): module responsibilities, State contract, and runtime.
 - [Memory field evidence](docs/memory-map.md): field sources and evidence levels.
