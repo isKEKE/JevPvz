@@ -168,7 +168,16 @@ layer has one job:
   Plant decisions ask only a complete legal placement Choice: the model's own
   discard option expresses waiting (strictly only when its probability beats the
   discard option), there is no absolute plant gate, and the selected option is
-  taken by argmax with no local lane reranking. At `wave == 0` the pre-level
+  taken by argmax with no local lane reranking. The declared construction goal is
+  context, not an authorization premise: it never filters the hand down to one
+  type, and it limits the offered placements only through `economy` -- while the
+  goal still needs sun and no lane is at `medium` urgency or higher (or holds a
+  zombie with nothing able to attack it), the branch waits locally with
+  `await_plan`; once the goal is payable it offers that goal's placements plus
+  every card the balance above the goal's own price can pay for. `economy` states
+  the balance band against this hand's own prices
+  (`scarce`/`normal`/`comfortable`/`abundant`), the goal's cost and shortfall, and
+  `sun_above_plan`. At `wave == 0` the pre-level
   zombie transient is excluded from the PlantBranch change key (a missing or
   malformed wave stays conservative), while the zombie facts still reach the
   model.
@@ -178,7 +187,9 @@ layer has one job:
   Source domain, intent content version, target, current actual resources,
   identity, stop and TTL are checked before dispatch. Invalid/stale proposals
   are rejected without substituting another model target. Intent is context,
-  never standalone action authorization. No sun reservation or forecast exists.
+  never standalone action authorization. No income is forecast; the only
+  reservation is the declared goal's own price, and it only bounds the offered
+  placements as described above.
   A collect request carries its own bounded confirmation budget
   (`COLLECT_CONFIRMATION_TIMEOUT_MS = 2500` in `jev/scheduler.py`), because an
   unconfirmed collect click holds the only executor until its wait elapses;
@@ -211,8 +222,10 @@ of any runtime question set and no longer act as policy. Target Choice uses
 argmax without a per-entry confidence threshold on the path. Every job writes a bounded group rather than one record per observation,
 and the trace never contains the raw All State, a raw SDK response, credentials,
 or any reserved or predicted income. `job_end` follows decision-completion order
-while `action_result` follows the actual execution order, and the Dashboard shows
-both separately. Schema-1 legacy cycle files stay readable and are validated
+while `action_result` follows the actual execution order. The Dashboard no longer
+renders those two orders as lists: the Runtime page shows one point per option of
+the latest request for each question and lights only the options that a
+successful same-job game action proved executed. Schema-1 legacy cycle files stay readable and are validated
 against their own shape, so an old cycle record is never presented as a
 concurrent branch event.
 

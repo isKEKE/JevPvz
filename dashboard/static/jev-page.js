@@ -1,23 +1,63 @@
 "use strict";
 
-const JEV_TRACE_REFRESH_MS = 1000;
+// The JEV Runtime page shows one dot per option of each question's latest
+// request in the current run. It reads the fixed read-only summary route
+// (GET /api/jev-options) instead of the 100-event Trace window, so every offered
+// option survives a long run. A dot lights only when the summary marks that exact
+// option as executed; the server derives that from a same-job game action whose
+// Boundary status is success. Nothing on this page may infer execution from the
+// model probability, a finished job, or a discarded proposal.
+
+const JEV_OPTION_REFRESH_MS = 1000;
 const jevById = (id) => document.getElementById(id);
-const ACTION_LABELS = { wait: "等待", collect: "收集", plant: "种植", shovel: "铲除", place_plant: "种植", collect_item: "收集", shovel_cell: "铲除" };
 const BRANCH_LABELS = { plant: "种植分支", collect: "收集分支" };
-const RUNTIME_EVENT_LABELS = {
-  job_start: "任务开始",
-  request_result: "请求结果",
-  proposal_discarded: "提案作废",
-  action_result: "动作结果",
-  job_end: "任务结束",
-  runtime_stop: "运行停止",
+const QUESTION_LABELS = {
+  should_collect_now: "是否立即收集",
+  collect_target: "收集目标",
+  construction_intent: "经营意图",
+  next_construction_type: "下一建设类型",
+  should_invest_economy: "是否投入经济",
+  plant_target: "目标植物",
+  plant_target_lane: "目标行",
 };
-const TRACE_EMPTY_MESSAGES = {
-  unconfigured: "请在 Dashboard 启动参数中配置 JSONL Trace 路径。",
-  missing: "等待 JEV Loop 创建 Trace 并完成第一个周期。",
-  empty: "第一个决策周期完成后，时间线会显示在这里。",
-  error: "Trace 内容或文件暂时无法读取。",
+const PLANT_OPTION_PATTERN = /^([^@\s]+)@r(\d+)c(\d+)$/;
+const PLANT_LANE_TARGET_QUESTION_PATTERN = /^plant_target_lane_(\d+)$/;
+const OPTION_STATE_LABELS = { true: "已证实执行", false: "未证实执行" };
+// One matrix, colour tells you which question an option came from.
+const PLANT_QUESTIONS = new Set(["plant_target", "plant_target_lane"]);
+const COLLECT_QUESTIONS = new Set(["should_collect_now", "collect_target"]);
+const MANAGE_QUESTIONS = new Set(["construction_intent", "next_construction_type", "should_invest_economy"]);
+const CATEGORY_LABELS = { plant: "种植", collect: "收集", manage: "经营" };
+function optionCategory(group) {
+  const questionId = String(group?.question_id ?? "");
+  if (MANAGE_QUESTIONS.has(questionId)) return "manage";
+  if (COLLECT_QUESTIONS.has(questionId)) return "collect";
+  if (PLANT_QUESTIONS.has(questionId) || PLANT_LANE_TARGET_QUESTION_PATTERN.test(questionId)) return "plant";
+  return group?.branch_id === "collect" ? "collect" : "plant";
+}
+const OPTION_STATUS = {
+  ok: ["本局候选", "每个节点代表本局某类问题最近一次请求中的一个选项；亮点只代表该选项已被同源成功动作证实执行。", "available"],
+  legacy: ["历史 v1 记录", "v1 只记录周期结果，没有完整的问题选项，因此不显示决策网络。", "provisional"],
+  unconfigured: ["尚未配置记录文件", "启动时指定 Loop 使用的同一文件。", "unavailable"],
+  missing: ["等待记录文件", "文件尚未创建；运行 JEV Loop 并写入首条记录后会显示。", "unavailable"],
+  empty: ["等待首个完整周期", "记录文件已配置，目前还没有完整事件。", "provisional"],
+  error: ["记录暂时不可读", "请检查配置的文件；页面不会尝试读取其他路径。", "error"],
 };
+const OPTION_NOTICES = {
+  ok: "本局还没有提出任何问题。",
+  legacy: "历史 v1 记录没有完整的问题选项，不伪造节点。",
+  unconfigured: "请配置记录文件路径。",
+  missing: "等待 JEV Loop 创建记录并完成第一个周期。",
+  empty: "记录文件已配置，目前还没有完整记录。",
+  error: "记录内容或文件暂时无法读取。",
+};
+const NEW_RUN_NOTICE = "新一局正在启动；等待本局的第一个问题。";
+let renderedMatrixKey = null;
+let visibleRunId = null;
+let previousRunId = null;
+let awaitingNewRun = false;
+let seenOptionKeys = new Set();
+let runtimeBusy = false;
 
 function jevText(tag, className, text) {
   const element = document.createElement(tag);
@@ -26,255 +66,281 @@ function jevText(tag, className, text) {
   return element;
 }
 
-function actionLabel(action) {
-  return ACTION_LABELS[action] || (action ? String(action).replaceAll("_", " ") : "未执行");
+function questionTitle(group) {
+  const questionId = String(group?.question_id ?? "");
+  const lane = PLANT_LANE_TARGET_QUESTION_PATTERN.exec(questionId);
+  const label = QUESTION_LABELS[questionId] || (lane ? `第 ${Number(lane[1]) + 1} 行目标植物` : questionId || "未知问题");
+  const branch = BRANCH_LABELS[group?.branch_id] || (group?.branch_id ? String(group.branch_id) : null);
+  return [branch, label].filter(Boolean).join(" · ");
 }
 
-function probability(value) {
-  return Number.isFinite(value) ? `${Math.round(value * 100)}%` : "—";
+// Plant options are identified by their type plus the one-based row/column they
+// name; every other question keeps the option id the summary recorded.
+function optionName(optionId) {
+  const plant = PLANT_OPTION_PATTERN.exec(optionId);
+  if (plant) return `${plant[1]} · 第 ${Number(plant[2]) + 1} 行第 ${Number(plant[3]) + 1} 列`;
+  return optionId || "未命名 option";
 }
 
-function sampleLabel(sequence) {
-  return Number.isInteger(sequence) ? `State #${sequence}` : "无 State 样本";
+function probabilityLabel(value) {
+  return Number.isFinite(value) ? `${Math.round(value * 100)}%` : "未知";
 }
 
-function formatTimestamp(value) {
-  if (typeof value !== "string") return "时间未知";
-  return value.replace("T", " ").replace(/\.\d{3}Z$/, " UTC").replace(/Z$/, " UTC");
+function optionAccessibleName(group, option, executed) {
+  return [
+    CATEGORY_LABELS[optionCategory(group)],
+    questionTitle(group),
+    optionName(String(option?.option_id ?? "")),
+    `模型概率 ${probabilityLabel(option?.probability)}`,
+    OPTION_STATE_LABELS[String(executed)],
+  ].join(" · ");
 }
 
-function renderCycle(event) {
-  const card = document.createElement("article");
-  card.className = "panel jev-cycle-card";
-
-  const header = document.createElement("div");
-  header.className = "jev-cycle-heading";
-  const cycle = Number.isInteger(event?.cycle) ? event.cycle : "—";
-  header.append(jevText("h3", "", `周期 ${cycle} · ${sampleLabel(event?.sample_sequence)}`));
-  header.append(jevText("time", "jev-cycle-time", formatTimestamp(event?.timestamp_utc)));
-  card.append(header);
-
-  const state = event?.state || {};
-  const game = state.game || {};
-  const phase = game.phase ? String(game.phase).replaceAll("_", " ") : "阶段未知";
-  card.append(jevText("p", "jev-state-line", `${phase} · 阳光 ${Number.isInteger(state.sun_balance) ? state.sun_balance : "—"}`));
-
-  const router = event?.router;
-  if (router?.response) {
-    const response = router.response;
-    const candidates = Array.isArray(response.candidates) ? response.candidates : [];
-    const scores = response.noul_probabilities || {};
-    const candidateText = candidates.length
-      ? candidates.map((candidate) => `${actionLabel(candidate)} ${probability(scores[candidate])}`).join("、")
-      : "无候选动作";
-    const choice = `${actionLabel(response.choice)}（confidence ${probability(response.confidence)}）`;
-    card.append(jevText("p", "jev-decision-line", `Router 候选：${candidateText} · 下一步：${choice}`));
-  } else {
-    card.append(jevText("p", "jev-decision-line", "Router 未调用"));
-  }
-
-  const action = event?.action;
-  if (action) {
-    const target = action.target;
-    const targetText = target
-      ? target.action === "place_plant" ? `${target.type_name || "植物"} · 第 ${(Number.isInteger(target.row) ? target.row + 1 : "?")} 行第 ${(Number.isInteger(target.col) ? target.col + 1 : "?")} 列`
-        : target.action === "shovel_cell" ? `第 ${(Number.isInteger(target.row) ? target.row + 1 : "?")} 行第 ${(Number.isInteger(target.col) ? target.col + 1 : "?")} 列`
-          : target.type_name || "已选择目标"
-      : action.status === "skipped_no_targets" ? "没有有效目标，未请求 Action"
-        : action.fallback_reason ? `转为等待：${String(action.fallback_reason).replaceAll("_", " ")}` : "没有执行目标";
-    card.append(jevText("p", "jev-action-line", `Action：${actionLabel(action.intent)} · ${targetText}`));
-  } else if (event?.effective_decision === "wait" || event?.outcome === "not_ready") {
-    card.append(jevText("p", "jev-action-line", "Action：未请求"));
-  }
-
-  const boundary = event?.boundary;
-  if (boundary) {
-    card.append(jevText("p", "jev-result-line", `动作边界：${boundary.status || "未知"} · ${actionLabel(boundary.action)}`));
-  } else {
-    card.append(jevText("p", "jev-result-line", `周期结果：${String(event?.outcome || "未知").replaceAll("_", " ")}`));
-  }
-
-  if (event?.error_code) card.append(jevText("p", "jev-error-line", `错误类型：${event.error_code}`));
-  if (event?.router?.fallback_reason) {
-    card.append(jevText("p", "jev-fallback-line", `Router 回退：${String(event.router.fallback_reason).replaceAll("_", " ")}`));
-  }
-  const nextSequence = event?.next_observation?.sample_sequence;
-  card.append(jevText("p", "jev-next-line", `下一观察：${Number.isInteger(nextSequence) ? `State #${nextSequence}` : "本次运行结束"}`));
-  return card;
-}
-
-function setTraceStatus(status, count = 0, unit = "周期") {
+function setOptionStatus(status, groups) {
+  // The HUD carries state through the controls and the network itself, so the
+  // text panels are optional and every write below is guarded.
   const title = jevById("trace-status-title");
   const detail = jevById("trace-status-detail");
   const badge = jevById("trace-event-count");
-  const labels = {
-    ok: ["Trace 已连接", `显示最近 ${count} 个完整${unit}。`, "available"],
-    unconfigured: ["尚未配置 Trace", "启动 Dashboard 时通过 --jev-trace-file 指定 Loop 使用的同一文件。", "unavailable"],
-    missing: ["等待 Trace 文件", "文件尚未创建；运行 JEV Loop 并写入首条记录后会显示。", "unavailable"],
-    empty: ["等待首个完整周期", "Trace 文件已配置，目前还没有完整事件。", "provisional"],
-    error: ["Trace 暂时不可读", "请检查配置的 Trace 文件；页面不会尝试读取其他路径。", "error"],
+  const [heading, message, badgeClass] = OPTION_STATUS[status] || OPTION_STATUS.error;
+  if (title) title.textContent = heading;
+  if (detail) detail.textContent = message;
+  const optionCount = groups.reduce((total, group) => total + (Array.isArray(group?.options) ? group.options.length : 0), 0);
+  if (badge) {
+    badge.className = `state-badge ${badgeClass}`;
+    badge.textContent = status === "ok" ? `${groups.length} 类问题 / ${optionCount} 个候选` : heading;
+  }
+}
+
+function renderOptionNotice(status, text) {
+  return jevText("p", `panel jev-empty-state jev-option-notice jev-option-notice-${status || "error"}`, text);
+}
+
+const INTENT_NODES = [
+  { key: "collect", label: "收集" },
+  { key: "plant", label: "种植" },
+  { key: "cancel", label: "取消" },
+];
+const COLLECT_QUESTION_IDS = new Set(["should_collect_now", "collect_target"]);
+const MANAGE_QUESTION_IDS = new Set(["construction_intent", "next_construction_type", "should_invest_economy"]);
+
+function renderOptionDots(group, runId, freshKeys) {
+  const options = Array.isArray(group?.options) ? group.options : [];
+  const category = optionCategory(group);
+  const dots = [];
+  for (const option of options) {
+    dots.push(makeOptionDot(group, option, category, runId, freshKeys));
+  }
+  return dots;
+}
+
+function makeOptionDot(group, option, category, runId, freshKeys) {
+  const optionId = String(option?.option_id ?? "");
+  const executed = option?.executed === true;
+  const key = `${runId ?? ""}|${group?.question_id ?? ""}|${optionId}`;
+  const dot = document.createElement("button");
+  dot.type = "button";
+  dot.className = `jev-decision-dot jev-dot-${category} ${executed ? "executed" : "pending"}`;
+  if (freshKeys.has(key)) dot.classList.add("fresh");
+  dot.dataset.optionKey = key;
+  dot.dataset.questionId = String(group?.question_id ?? "");
+  dot.dataset.optionId = optionId;
+  dot.dataset.category = category;
+  dot.dataset.executed = String(executed);
+  const name = optionAccessibleName(group, option, executed);
+  dot.setAttribute("aria-label", name);
+  dot.title = name;
+  return dot;
+}
+
+// The first layer is derived, not asked: which branch this cycle actually reached.
+function deriveIntents(groups) {
+  const questionIds = groups.map((group) => String(group?.question_id ?? ""));
+  const plant = questionIds.some((id) => id.startsWith("plant_target"));
+  const collect = questionIds.some((id) => COLLECT_QUESTION_IDS.has(id));
+  const manage = questionIds.some((id) => MANAGE_QUESTION_IDS.has(id));
+  return {
+    collect: collect,
+    plant: plant,
+    // The cancel/manage path is live when a management question was asked, or when
+    // this cycle reached neither of the two concrete branches.
+    cancel: manage || (!plant && !collect),
   };
-  const [heading, message, badgeClass] = labels[status] || labels.error;
-  title.textContent = heading;
-  detail.textContent = message;
-  badge.className = `state-badge ${badgeClass}`;
-  badge.textContent = status === "ok" ? `${count} 个${unit}` : heading;
 }
 
-function renderEmptyTraceTimeline(timeline, status) {
-  timeline.append(jevText("p", "panel jev-empty-state", TRACE_EMPTY_MESSAGES[status] || TRACE_EMPTY_MESSAGES.error));
+
+function matrixSignature(payload) {
+  const groups = Array.isArray(payload?.questions) ? payload.questions : [];
+  return JSON.stringify([
+    payload?.status,
+    payload?.schema_version,
+    payload?.run_id,
+    groups.map((group) => [
+      group?.question_id,
+      group?.job_id,
+      (Array.isArray(group?.options) ? group.options : []).map((option) => [option?.option_id, option?.probability, option?.executed === true]),
+    ]),
+  ]);
 }
 
-function renderCycleTrace(payload, events) {
+function renderOptionMatrix(payload) {
   const timeline = jevById("jev-timeline");
-  setTraceStatus(payload?.status, events.length);
-  timeline.replaceChildren();
-  if (events.length === 0) {
-    renderEmptyTraceTimeline(timeline, payload?.status);
+  const status = payload?.status;
+  const groups = Array.isArray(payload?.questions) ? payload.questions : [];
+  const runId = typeof payload?.run_id === "string" ? payload.run_id : null;
+  const startingNewRun = awaitingNewRun && (runId === null || runId === previousRunId);
+  const signature = startingNewRun ? `starting:${runId}` : matrixSignature(payload);
+  if (signature === renderedMatrixKey) return;
+  const focusedKey = document.activeElement?.dataset?.optionKey || null;
+  renderedMatrixKey = signature;
+  if (startingNewRun) {
+    setOptionStatus("empty", []);
+    timeline.replaceChildren(renderOptionNotice("empty", NEW_RUN_NOTICE));
     return;
   }
-  for (const event of [...events].reverse()) timeline.append(renderCycle(event));
-}
-
-// --------------------------------------------------------- v2 runtime trace
-
-function branchLabel(branch) {
-  return BRANCH_LABELS[branch] || (branch ? String(branch) : "未知分支");
-}
-
-function jobIndex(events, name) {
-  const index = {};
-  events.filter((event) => event?.event === name).forEach((event, position) => {
-    if (event.job_id && !(event.job_id in index)) index[event.job_id] = position + 1;
-  });
-  return index;
-}
-
-// The decision that finishes first is not always the action that runs first: the
-// scheduler orders ready proposals by urgency while job_end follows completion
-// order. These two helpers keep both orders visible and separate.
-function decisionCompletionOrderText(events) {
-  const completions = events.filter((event) => event?.event === "job_end");
-  if (!completions.length) return "决策完成顺序：暂无已完成决策";
-  return `决策完成顺序：${completions.map((event, position) => `${position + 1}.${branchLabel(event.branch_id)}(${event.job_id || "未编号"})`).join(" → ")}`;
-}
-
-function executionOrderText(events) {
-  const executions = events.filter((event) => event?.event === "action_result");
-  if (!executions.length) return "实际执行顺序：本轮没有已执行动作";
-  return `实际执行顺序：${executions.map((event, position) => `${position + 1}.${branchLabel(event.branch_id)}(${event.execution_id || "未编号"})`).join(" → ")}`;
-}
-
-function runtimeEventDetail(event) {
-  if (event.event === "job_start") {
-    const strategy = event.strategy || {};
-    const phase = strategy.phase ? String(strategy.phase).replaceAll("_", " ") : "阶段未知";
-    const age = Number.isInteger(event.sample_age_ms) ? `${event.sample_age_ms} ms` : "未知";
-    return `${sampleLabel(event.sample_sequence)} · 样本年龄 ${age} · 阶段 ${phase}`;
+  awaitingNewRun = false;
+  if (runId !== visibleRunId) {
+    // Another run owns its own matrix and lights; nothing carries over even when
+    // the summary already dropped the old options.
+    visibleRunId = runId;
+    seenOptionKeys = new Set();
   }
-  if (event.event === "request_result") {
-    const merge = event.merge || {};
-    if (event.branch_id === "collect" && event.state?.current_intent) {
-      const intent = event.state.current_intent;
-      return `自主经营 · 意图 ${intent.type_name || "无"} · 来源版本 ${intent.version ?? "—"}`;
-    }
-    const rows = Array.isArray(merge.needed_rows) ? merge.needed_rows.join("、") : "无";
-    const reranked = merge.reranked === true ? " · 约束下重排" : "";
-    const rejected = merge.rejected_option ? ` · 重排前候选 ${merge.rejected_option}` : "";
-    const latency = Number.isInteger(event.latency_ms) ? `${event.latency_ms} ms` : "未知";
-    return `延迟 ${latency} · 目标规则 ${event.target_choice_rule || "未知"} · 需要响应的行 ${rows} · 选中 ${merge.chosen_option || "无"} → ${merge.selected_option || "无"}${reranked}${rejected}`;
-  }
-  if (event.event === "proposal_discarded") {
-    const queue = Number.isInteger(event.queue_delay_ms) ? `${event.queue_delay_ms} ms` : "未知";
-    return `目标 ${actionLabel(event.effective_action)} · 作废原因 ${String(event.discard_reason || "未知").replaceAll("_", " ")} · 排队 ${queue}`;
-  }
-  if (event.event === "action_result") {
-    const boundary = event.boundary || {};
-    const queue = Number.isInteger(event.queue_delay_ms) ? `${event.queue_delay_ms} ms` : "未知";
-    return `目标 ${actionLabel(event.effective_action)} · 边界 ${boundary.status || "未知"} ${actionLabel(boundary.action)} · 排队 ${queue}`;
-  }
-  if (event.event === "job_end") {
-    const reason = event.error_code ? ` · 错误类型 ${event.error_code}` : "";
-    return `结果 ${String(event.outcome || "未知").replaceAll("_", " ")}${reason}`;
-  }
-  const pending = Array.isArray(event.pending_proposals) ? event.pending_proposals.length : 0;
-  return `原因 ${String(event.stop_reason || "未知").replaceAll("_", " ")} · 未处理提案 ${pending}`;
-}
-
-function renderRuntimeEvent(event) {
-  const sequence = Number.isInteger(event?.event_sequence) ? `#${event.event_sequence}` : "#—";
-  const name = RUNTIME_EVENT_LABELS[event?.event] || String(event?.event || "事件");
-  const line = jevText(
-    "p",
-    `jev-runtime-event jev-runtime-${event?.event || "unknown"}`,
-    `${sequence} ${name} · ${runtimeEventDetail(event || {})}`,
-  );
-  return line;
-}
-
-function renderRuntimeJob(jobId, branch, events, completions, executions) {
-  const card = document.createElement("article");
-  card.className = "panel jev-cycle-card jev-runtime-job";
-  const header = document.createElement("div");
-  header.className = "jev-cycle-heading";
-  header.append(jevText("h3", "", `任务 ${jobId} · ${branchLabel(branch)}`));
-  const completed = completions[jobId] ? `#${completions[jobId]}` : "未完成";
-  const dispatched = executions[jobId] ? `#${executions[jobId]}` : "未执行";
-  header.append(jevText("time", "jev-cycle-time", `决策完成顺序 ${completed} · 实际执行顺序 ${dispatched}`));
-  card.append(header);
-  for (const event of events) card.append(renderRuntimeEvent(event));
-  return card;
-}
-
-function renderRuntimeTrace(payload, events) {
-  const timeline = jevById("jev-timeline");
-  setTraceStatus(payload?.status, events.length, "事件");
-  timeline.replaceChildren();
-  if (events.length === 0) {
-    renderEmptyTraceTimeline(timeline, payload?.status);
+  setOptionStatus(status, groups);
+  if (status !== "ok" || groups.length === 0) {
+    timeline.replaceChildren(renderOptionNotice(status, OPTION_NOTICES[status] || OPTION_NOTICES.error));
     return;
   }
-  timeline.append(jevText("p", "panel jev-runtime-order", decisionCompletionOrderText(events)));
-  timeline.append(jevText("p", "panel jev-runtime-order", executionOrderText(events)));
-  const completions = jobIndex(events, "job_end");
-  const executions = jobIndex(events, "action_result");
-  const jobs = [];
-  const byJob = new Map();
-  for (const event of events) {
-    if (event?.event === "runtime_stop") continue;
-    const key = event?.job_id || "无任务";
-    if (!byJob.has(key)) {
-      byJob.set(key, { branch: event?.branch_id, events: [] });
-      jobs.push(key);
+  const currentKeys = new Set();
+  for (const group of groups) {
+    for (const option of (Array.isArray(group?.options) ? group.options : [])) {
+      currentKeys.add(`${runId ?? ""}|${group?.question_id ?? ""}|${String(option?.option_id ?? "")}`);
     }
-    byJob.get(key).events.push(event);
   }
-  for (const jobId of [...jobs].reverse()) {
-    const job = byJob.get(jobId);
-    timeline.append(renderRuntimeJob(jobId, job.branch, job.events, completions, executions));
+  // Only truly newly appeared options animate; the first paint of a run is not a change.
+  const freshKeys = seenOptionKeys.size === 0
+    ? new Set()
+    : new Set([...currentKeys].filter((key) => !seenOptionKeys.has(key)));
+  seenOptionKeys = currentKeys;
+
+  // Left to right: the derived intent layer, its links, then the concrete targets.
+  const intents = deriveIntents(groups);
+  const net = document.createElement("div");
+  net.className = "jev-net";
+
+  const intentColumn = document.createElement("div");
+  intentColumn.className = "jev-net-intent";
+  intentColumn.setAttribute("role", "group");
+  intentColumn.setAttribute("aria-label", "本周期意图");
+  for (const node of INTENT_NODES) {
+    const active = intents[node.key] === true;
+    const element = document.createElement("button");
+    element.type = "button";
+    element.className = `jev-intent-node jev-intent-${node.key} ${active ? "active" : "idle"}`;
+    element.dataset.intent = node.key;
+    element.dataset.active = String(active);
+    const name = `${node.label}：本周期${active ? "已进入" : "未进入"}该分支`;
+    element.setAttribute("aria-label", name);
+    element.title = name;
+    element.append(jevText("span", "jev-intent-core", ""));
+    intentColumn.append(element);
   }
-  for (const event of [...events].filter((item) => item?.event === "runtime_stop").reverse()) {
-    timeline.append(renderRuntimeEvent(event));
+
+  const detail = document.createElement("div");
+  detail.className = "jev-net-detail";
+  // One dense mesh: every option of the run is a dot on a connected lattice.
+  const mesh = document.createElement("div");
+  mesh.className = "jev-mesh";
+  mesh.setAttribute("role", "group");
+  mesh.setAttribute("aria-label", "本局全部候选 option 点阵");
+  for (const group of groups) {
+    for (const dot of renderOptionDots(group, runId, freshKeys)) mesh.append(dot);
+  }
+  detail.append(mesh);
+  net.append(intentColumn, detail);
+  timeline.replaceChildren(net);
+  if (focusedKey) {
+    timeline.querySelectorAll(".jev-decision-dot").forEach((dot) => {
+      if (dot.dataset.optionKey === focusedKey) dot.focus?.();
+    });
   }
 }
 
-function renderTrace(payload) {
-  const events = Array.isArray(payload?.events) ? payload.events : [];
-  if (payload?.schema_version === 2) renderRuntimeTrace(payload, events);
-  else renderCycleTrace(payload, events);
-}
-
-async function fetchJevTrace() {
+async function fetchOptionMatrix() {
   try {
-    const response = await fetch("/api/jev-trace", { cache: "no-store" });
-    if (!response.ok) throw new Error("Trace API unavailable");
-    renderTrace(await response.json());
+    const response = await fetch("/api/jev-options", { cache: "no-store" });
+    if (!response.ok) throw new Error("Option summary unavailable");
+    renderOptionMatrix(await response.json());
   } catch {
-    renderTrace({ status: "error", events: [] });
+    renderOptionMatrix({ status: "error", questions: [] });
+  }
+}
+
+function renderRuntimeStatus(status) {
+  // No status prose: the panel state drives the button lighting instead.
+  const panel = jevById("jev-runtime");
+  const state = status?.state || "unknown";
+  if (panel) panel.dataset.state = state;
+  const message = status?.message || "无法读取进程状态";
+  const meta = `进程 ${status?.pid ?? "—"} · 退出码 ${status?.exit_code ?? "—"} · 游戏${status?.game_ready ? "进行中" : "未就绪"}`;
+  const startButton = jevById("runtime-start");
+  const stopButton = jevById("runtime-stop");
+  if (startButton) {
+    startButton.disabled = runtimeBusy || !status?.can_start;
+    startButton.title = `启动 · ${message} · ${meta}`;
+  }
+  if (stopButton) {
+    stopButton.disabled = runtimeBusy || !status?.can_stop;
+    stopButton.title = `强制结束 · ${message} · ${meta}`;
+  }
+}
+
+async function fetchRuntimeStatus() {
+  try {
+    const response = await fetch("/api/jev-runtime", { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    renderRuntimeStatus(await response.json());
+  } catch (error) {
+    renderRuntimeStatus({ state: "failed", message: `进程状态不可读：${error}` });
+  }
+}
+
+async function controlRuntime(command) {
+  if (runtimeBusy) return;
+  runtimeBusy = true;
+  const startButton = jevById("runtime-start");
+  const stopButton = jevById("runtime-stop");
+  if (startButton) startButton.disabled = true;
+  if (stopButton) stopButton.disabled = true;
+  try {
+    if (command === "start" && visibleRunId === null) await fetchOptionMatrix();
+    const response = await fetch(`/api/jev-runtime/${command}`, {
+      method: "POST", headers: { "Content-Type": "application/json", "X-JEV-Control": "1" }, body: "{}", cache: "no-store",
+    });
+    const status = await response.json();
+    if (command === "start" && response.ok) {
+      previousRunId = visibleRunId;
+      visibleRunId = null;
+      awaitingNewRun = true;
+      renderedMatrixKey = null;
+      seenOptionKeys = new Set();
+    }
+    renderRuntimeStatus(status);
+  } catch (error) {
+    renderRuntimeStatus({ state: "failed", message: `控制请求失败：${error}` });
+  } finally {
+    runtimeBusy = false;
+    await fetchRuntimeStatus();
+    await fetchOptionMatrix();
   }
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  fetchJevTrace();
-  window.setInterval(fetchJevTrace, JEV_TRACE_REFRESH_MS);
+  const startButton = jevById("runtime-start");
+  const stopButton = jevById("runtime-stop");
+  if (startButton) startButton.addEventListener("click", () => controlRuntime("start"));
+  if (stopButton) stopButton.addEventListener("click", () => controlRuntime("stop"));
+  fetchRuntimeStatus();
+  fetchOptionMatrix();
+  window.setInterval(fetchRuntimeStatus, JEV_OPTION_REFRESH_MS);
+  window.setInterval(fetchOptionMatrix, JEV_OPTION_REFRESH_MS);
 });

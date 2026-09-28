@@ -3,79 +3,117 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#183a2b">
-  <title>PvZ 草坪状态</title>
+  <meta name="theme-color" content="#080b0f">
+  <title>JEV / PvZ 决策运行时</title>
   <link rel="stylesheet" href="/static/style.css">
-  <script src="/static/app.js" defer></script>
+  <script src="/static/viewmodel.js" defer></script>
+  <script src="/static/recording.js" defer></script>
 </head>
-<body>
-  <header class="topbar">
-    <div class="brand-mark" aria-hidden="true">✿</div>
-    <div class="brand-copy"><p class="eyebrow">READ ONLY · LOCAL MONITOR</p><h1>草坪状态</h1></div>
-    <div class="status-strip">
-      <div class="metric sun-metric"><span>☀ 阳光</span><strong id="sun-value">—</strong><small id="sun-status">等待数据</small></div>
-      <div class="metric"><span>关卡</span><strong id="level-value">—</strong></div>
-      <div class="metric"><span>波次</span><strong id="wave-value">—</strong></div>
-      <div class="metric"><span>场景 / 模式</span><strong id="scene-value">—</strong></div>
-      <div class="metric"><span>局面状态</span><strong id="run-state-value">—</strong></div>
-      <div class="connection-pill" id="connection-pill"><span class="status-dot"></span><span id="connection-label">等待采样</span></div>
-      <div class="sample-metric"><span id="sample-time">等待采样</span><small id="sample-age">尚未取得快照</small></div>
+<body class="rt-page">
+  <header class="rt-bar">
+    <!-- 三组信息：品牌 / 局面 / 运行控制。不再是一字排开的状态栏。 -->
+    <div class="rt-group rt-group-brand">
+      <span class="rt-brand-mark" aria-hidden="true">✳</span>
+      <span class="rt-brand-name">JEV / PvZ</span>
+      <span class="rt-brand-sub">AI Decision Runtime</span>
     </div>
-    <nav class="page-nav" aria-label="页面导航"><a class="active" href="/">草坪主页</a><a href="/state">完整 State</a><a href="/jev">JEV 时间线</a></nav>
+    <div class="rt-group rt-group-state">
+      <div class="rt-metric is-sun"><span>阳光</span><b id="m-sun">—</b></div>
+      <div class="rt-metric"><span>波次</span><b id="m-wave">—</b></div>
+      <div class="rt-metric"><span>关卡</span><b id="m-level">—</b></div>
+      <div class="rt-metric"><span>模式</span><b id="m-mode">—</b></div>
+    </div>
+    <div class="rt-group rt-group-run">
+      <span class="rt-status"><span class="rt-dot" id="m-run-dot" aria-hidden="true"></span>
+        <span id="m-run-label">未连接</span></span>
+      <time class="rt-clock" id="m-clock">--:--:--</time>
+      <!-- 一个主控制：空闲显示运行，运行中换成停止。 -->
+      <button id="runtime-start" class="rt-btn rt-btn-run" type="button" disabled>
+        <span class="rt-btn-icon rt-icon-run" aria-hidden="true"></span>运行
+      </button>
+      <button id="runtime-stop" class="rt-btn rt-btn-stop" type="button" disabled hidden>
+        <span class="rt-btn-icon rt-icon-stop" aria-hidden="true"></span>停止
+      </button>
+    </div>
   </header>
 
-  <main id="dashboard">
-    <div class="view-toolbar">
-      <div class="entity-summary"><span>植物 <b id="plant-count">—</b></span><span>僵尸 <b id="zombie-count">—</b></span><span>掉落物 <b id="item-count">—</b></span></div>
-      <div class="view-switch" role="group" aria-label="状态视图">
-        <button type="button" class="selected" data-state-view="structured" aria-pressed="true">结构化</button>
-        <button type="button" data-state-view="json" aria-pressed="false">原始 JSON</button>
-      </div>
+  <main class="rt-main">
+    <div class="rt-workspace">
+      <section class="rt-world" aria-label="世界状态">
+        <div class="rt-world-head">
+          <h2>世界模型</h2>
+          <span class="rt-pane-meta">WORLD MODEL · 5 × 9</span>
+        </div>
+        <div class="rt-inventory" aria-label="可用卡槽">
+          <span class="inv-count">可用 <b id="inv-available">—</b></span>
+          <div class="inv-list" id="inv-list"><span class="empty-message">等待采样</span></div>
+        </div>
+        <div class="rt-world-main">
+          <div class="rt-lawn-wrap">
+            <div class="lawn" id="lawn" role="img" aria-label="五行九列草坪"></div>
+          </div>
+          <div class="rt-target" id="target" aria-label="当前目标与局面"></div>
+        </div>
+      </section>
+
+      <section class="rt-viewport" aria-label="游戏窗口">
+        <div class="rt-viewport-head">
+          <h2>游戏窗口</h2>
+          <span class="rt-pane-meta">800 × 600</span>
+        </div>
+        <!-- GameViewport：录制时由真实画面填充，这里只保留精确 800×600 的挂载点。 -->
+        <div class="game-viewport" id="game-viewport" data-slot="capture">
+          <span class="gv-label">800 × 600</span>
+        </div>
+        <!-- 把机器正在看的东西指回真实画面，建立两侧的关联。 -->
+        <p class="rt-crossref" id="crossref"></p>
+      </section>
     </div>
-    <section id="dashboard-structured" class="dashboard-grid" aria-label="结构化状态">
-      <div class="primary-column">
-        <section class="panel cards-panel">
-          <div class="section-heading compact-heading"><div><p class="eyebrow">SEED BANK</p><h2>卡牌槽</h2></div><span id="cards-status" class="state-badge unavailable">未获取</span></div>
-          <div id="cards-list" class="cards-list"><p class="empty-message">等待卡槽采样</p></div>
-        </section>
-        <section class="panel lawn-panel">
-          <div class="section-heading lawn-heading"><div><p class="eyebrow">BOARD · 5 ROWS × 9 COLUMNS</p><h2>草坪</h2></div><span id="overlay-status">未绘制未校准的僵尸位置</span></div>
-          <div id="board" class="board" aria-label="五行九列草坪"></div>
-          <div class="board-legend"><span><i class="legend-plant"></i>植物占用</span><span><i class="legend-empty"></i>空格</span><span><i class="legend-zombie"></i>僵尸格列位置（不代表格子占用）</span><span>可种规则未知</span></div>
-        </section>
+
+    <section class="rt-decision" aria-label="JEV 决策轨迹">
+      <div class="rt-decision-head">
+        <h2>决策轨迹</h2>
+        <span class="rt-pane-meta">DECISION TRACE</span>
+        <span class="rt-pane-meta" id="decision-meta"></span>
       </div>
-      <aside class="observation-column panel">
-        <div class="section-heading compact-heading"><div><p class="eyebrow">OBSERVATION</p><h2>状态观察</h2></div></div>
-        <div class="observation-tabs" role="tablist" aria-label="观察详情">
-          <button class="selected" type="button" data-observation-tab="threats" aria-selected="true">僵尸的威胁程度</button>
-          <button type="button" data-observation-tab="details" aria-selected="false">进度与掉落物</button>
-          <button type="button" data-observation-tab="coverage" aria-selected="false">字段证据</button>
-          <button type="button" data-observation-tab="diagnostics" aria-selected="false">采样</button>
+      <div class="rt-chain">
+        <div class="rt-stage" data-stage="observe">
+          <span class="stage-label">Observe</span>
+          <div class="stage-body" id="stage-observe"><p class="stage-empty">等待采样</p></div>
         </div>
-        <div class="observation-pane active" data-observation-pane="threats">
-          <div class="section-heading mini-heading"><h3>僵尸详情</h3><span id="zombies-status" class="state-badge unavailable">未获取</span></div>
-          <div id="lane-list" class="lane-list"><p class="empty-message">等待僵尸采样</p></div>
+        <span class="stage-arrow" aria-hidden="true">›</span>
+        <div class="rt-stage" data-stage="intent">
+          <span class="stage-label">Intent</span>
+          <div class="stage-body" id="stage-intent"><p class="stage-empty">等待决策</p></div>
         </div>
-        <div class="observation-pane" data-observation-pane="details" hidden>
-          <h3>掉落物</h3><div id="items-list" class="detail-list"><p class="empty-message">等待采样</p></div>
-          <h3>阶段与进度</h3><div id="game-details" class="detail-list"><p class="empty-message">尚未读取</p></div>
+        <span class="stage-arrow" aria-hidden="true">›</span>
+        <div class="rt-stage" data-stage="option">
+          <span class="stage-label">Option</span>
+          <div class="stage-body" id="stage-option"><p class="stage-empty">等待决策</p></div>
         </div>
-        <div class="observation-pane" data-observation-pane="coverage" hidden><div id="missing-list" class="coverage-list"><p class="empty-message">等待状态记录</p></div></div>
-        <div class="observation-pane" data-observation-pane="diagnostics" hidden><div id="sample-diagnostics" class="detail-list"><p class="empty-message">等待采样</p></div></div>
-      </aside>
-    </section>
-    <section id="dashboard-json" class="panel raw-panel" hidden aria-label="完整 State JSON">
-      <div class="section-heading">
-        <div><p class="eyebrow">SAME LIVE SNAPSHOT</p><h2>原始 State JSON</h2></div>
-        <div class="json-actions">
-          <a class="text-link" href="/state">打开独立观察页 →</a>
-          <span id="raw-copy-status" class="copy-status" role="status" aria-live="polite"></span>
-          <button id="copy-raw-json" class="copy-button" type="button" aria-label="复制当前完整 State JSON" disabled>复制 JSON</button>
+        <span class="stage-arrow" aria-hidden="true">›</span>
+        <div class="rt-stage" data-stage="action">
+          <span class="stage-label">Action</span>
+          <div class="stage-body" id="stage-action"><p class="stage-empty">等待决策</p></div>
         </div>
       </div>
-      <pre id="raw-json">等待采样…</pre>
+      <!-- 列与上方草坪逐列对齐，观众可以竖直对照“世界里的位置”。 -->
+      <div class="rt-bottom">
+        <div class="rt-position">
+          <div class="rt-position-head">
+            <span class="stage-label">Position</span>
+            <span class="rt-pane-meta" id="field-provenance"></span>
+          </div>
+          <div class="rt-field">
+            <!-- 轨道 / 竖轴 / 信号都在这一层，压在节点下面。 -->
+            <svg class="field-svg" id="field-svg" aria-hidden="true"></svg>
+            <div class="rt-field-grid" id="field-grid"></div>
+            <span class="field-coord" id="field-coord" hidden></span>
+          </div>
+        </div>
+      </div>
+      <svg class="rt-trace" id="trace" aria-hidden="true"></svg>
     </section>
   </main>
-  <footer>只读监视器 · 当前页面与完整 State 页共用同一采样器</footer>
 </body>
 </html>

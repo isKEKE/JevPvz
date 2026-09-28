@@ -103,7 +103,8 @@ In that sample, zombie slot 2 had body HP `218`, helmet HP `0`, shield HP
 `1266`. A localhost `/api/state` response on the updated server exposed the
 same decoded fields and raw snapshot. Its sample included a shielded zombie at
 body HP `270` plus shield HP `1100`, for a parts sum of `1370`. The page and
-`/static/app.js` both returned HTTP 200 with the updated renderer. The API
+`/static/app.js` (since replaced: Iteration 008 split it into
+`viewmodel.js` + `recording.js`) both returned HTTP 200 with the updated renderer. The API
 snapshot's overall status was `error` because the existing plant reader found
 two plants at row 0, column 6; progress and zombie HP availability remained
 `provisional`. The old server on port 8765 still returned the pre-fix `root`

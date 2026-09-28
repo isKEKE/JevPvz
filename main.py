@@ -21,6 +21,7 @@ from runtime.process import (
 from state.builder import capture_state
 from state.projection import project_jev_state
 from dashboard.server import serve_dashboard
+from dashboard.runtime_control import RuntimeProcessLock
 from jev.config import JevConfigurationError, load_typesafe_environment
 from jev.loop import JevRuntimeCycle, JevRuntimeLoop
 from jev.trace import RuntimeEventBuilder, TraceRecorder, TraceWriteError
@@ -93,6 +94,17 @@ def run_action(*, action_json: str | None) -> int:
 
 
 def run_jev_loop(*, interval_ms: int, max_cycles: int | None, trace_file: str) -> int:
+    lock = RuntimeProcessLock()
+    try:
+        if not lock.acquire():
+            print("jev-loop failed: another JEV Loop is already running.", file=sys.stderr)
+            return 2
+        return _run_jev_loop_locked(interval_ms=interval_ms, max_cycles=max_cycles, trace_file=trace_file)
+    finally:
+        lock.release()
+
+
+def _run_jev_loop_locked(*, interval_ms: int, max_cycles: int | None, trace_file: str) -> int:
     # Reject unusable start options before anything is opened or truncated. A
     # negative observation interval and a non-positive job limit are startup
     # failures, not runtime stop conditions, so they never create a Trace and
@@ -196,7 +208,7 @@ def build_parser() -> argparse.ArgumentParser:
     serve = subparsers.add_parser("serve", help="start the localhost-only browser dashboard")
     serve.add_argument("--port", type=int, default=8765)
     serve.add_argument("--interval-ms", type=int, default=200, help="background sampling interval (minimum 50 ms)")
-    serve.add_argument("--jev-trace-file", help="optional JSONL Trace path to read in the JEV dashboard page")
+    serve.add_argument("--jev-trace-file", help="JSONL Trace path for Dashboard JEV Runtime (default: .log/jev-dashboard.jsonl)")
     action = subparsers.add_parser("action", help="execute one guarded semantic UI action")
     action.add_argument("--action-json", help="one JSON request with an action and semantic parameters")
     jev_loop = subparsers.add_parser("jev-loop", help="run the guarded TypeSafe JEV decision loop")

@@ -10,8 +10,8 @@
 <body class="state-page">
   <header class="topbar">
     <div class="brand-mark" aria-hidden="true">✿</div>
-    <div><p class="eyebrow">READ ONLY · LOCAL MONITOR</p><h1>State 观察</h1></div>
-    <nav class="page-nav" aria-label="页面导航"><a href="/">草坪状态</a><a class="active" href="/state">State 观察</a><a href="/jev">JEV 时间线</a></nav>
+    <div><h1>State 观察</h1></div>
+    <nav class="page-nav" aria-label="页面导航"><a href="/">草坪状态</a><a class="active" href="/state">State 观察</a><a href="/jev">JEV Runtime</a></nav>
   </header>
   <main class="state-main">
     <section class="state-summary panel" aria-live="polite">
@@ -28,7 +28,7 @@
         <strong id="state-profile-label">当前：JEV State</strong>
       </div>
       <div class="section-heading">
-        <div><p class="eyebrow">LIVE JSON · ENGLISH MACHINE VALUES</p><h2 id="state-json-title">JEV State 快照</h2></div>
+        <div><h2 id="state-json-title">JEV State 快照</h2></div>
         <div class="json-actions">
           <span id="state-copy-status" class="copy-status" role="status" aria-live="polite"></span>
           <button id="state-copy-button" class="copy-button" type="button" aria-label="复制当前 JEV State JSON" disabled>复制 JSON</button>
@@ -38,6 +38,5 @@
       <div id="state-json" class="json-tree" role="region" aria-label="State JSON" aria-live="off">等待 State 采样…</div>
     </section>
   </main>
-  <footer>与草坪主页共享同一 State 采样器 · 链接在当前标签页切换</footer>
 </body>
 </html>

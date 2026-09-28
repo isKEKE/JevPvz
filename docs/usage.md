@@ -14,7 +14,7 @@ Windows 下《植物大战僵尸》1.0.0.1051 的状态监视、受控界面动�
    ```
 
 3. **放好并启动游戏**：目标程序为 `.game/PlantsVsZombies.exe`（该目录已被 Git 忽略）。版本与 SHA-256 必须与 `configs/pvz_1051.py` 中的锁定值完全匹配；不匹配时命令会直接报身份错误，不会继续读取。**先启动游戏**再运行下面的命令，并保持它运行且未暂停。
-4. **按用途选一条命令**（详见下方「命令一览」）。只读观察不需要任何凭据；`jev-loop` 额外需要 `.env`（见「JEV 决策循环」）。
+4. **按用途选一条命令**（详见下方「命令一览」）。只读观察不需要任何凭据；`jev-loop` 和网页的 JEV Runtime START 需要 `.env`（见「JEV 决策循环」）。
 
 ```powershell
 uv run python main.py probe                                   # 校验身份并读一次
@@ -28,7 +28,7 @@ uv run python main.py serve                                    # 开网页仪表
 |---|---|---|---|
 | `probe` | 校验目标进程与可执行身份，输出一次原始读取结果 | 否 | 否 |
 | `snapshot` | 输出一次或持续输出标准化 State JSON | 否 | 否 |
-| `serve` | 启动本机只读仪表盘（状态页与 JEV 时间线页） | 否 | 否 |
+| `serve` | 启动本机仪表盘与 JEV Runtime 控制台 | 仅 START 时需要 | **通过 START** |
 | `action` | 按一个语义 JSON 请求执行**一次**界面动作 | 否 | **是** |
 | `jev-loop` | 运行 TypeSafe JEV 异步决策循环并执行动作 | **是** | **是** |
 
@@ -71,7 +71,7 @@ uv run python main.py serve
 
 打开 <http://127.0.0.1:8765/> 查看状态。主页的“原始 JSON”视图与结构化视图使用同一采样快照。`/state` 页默认查看 JEV State，可切换至完整 All State；复制操作始终对应当前显示的 profile，并以可折叠、带语法着色的 JSON 树呈现。两页的普通导航链接会在当前标签页切换。`/api/state` 保持完整 State，`/api/jev-state` 返回显式 allowlist 投影，两者共享同一个后台采样器。
 
-`/jev` 页只读呈现 JEV Trace 时间线，**不会**启动或停止 Loop、也不会发送游戏输入；它只显示显式配置的 Trace 路径，不接受通过 HTTP 参数指定任意路径。
+`/jev` 是 JEV Runtime 控制台，草坪主页（`/`）也内嵌了同一个 HUD，便于与游戏同屏。HUD 除无障碍标签外不含文字：青色 ▶ 启动、洋红 ■ 强制结束，面板状态（运行/待机/失败）通过按钮点亮体现而无状态文案。`serve` 默认使用 `.log/jev-dashboard.jsonl`，也可用 `--jev-trace-file` 指定固定路径。游戏 State 有效、已连接、`phase=playing` 且未暂停时，START 启动一个真实 `jev-loop` 子进程；STOP 强制结束这个 Dashboard 启动的进程。另一个 Dashboard 或命令行 Loop 已占用时，页面拒绝重复启动且不会停止外部进程。网页请求不能提交任意路径或命令。只读点阵画成左右一张决策网络：左侧意图层（收集/种植/取消）由本周期实际问了哪些分支推导，进入的分支点亮；右侧收集层平铺该问题最近一次请求的**全部 option**（一个 option 一个点，含 `none_of_the_above`；Noul 展开 `true`/`false`，点数随可收项动态变化），种植层是**固定的 5×9 草坪矩阵**（45 格，被证实种植到该格才亮）。页面不显示文字标签，每个节点与格子都可用鼠标悬停或键盘焦点读出名称（植物格为行列与候选数，其他为 option ID）。只有与组内最新请求同源 `job_id`、`action_result.boundary.status == success` 且目标精确映射到该 option 的游戏动作才点亮：成功 `place_plant` 点亮 `类型@r行c列` 对应的草坪格，成功 `collect_item` 点亮 `should_collect_now:true`；`construction_intent` 与 `next_construction_type` 等经营选择保持暗点。失败、未确认、作废、仅模型选中与旧 job 迟到的动作都不亮；缺少证据按暗点处理，模型概率不代表执行。已证实执行的点与格在本局内持续点亮，不会被后续重新提问抹去。每类问题只保留本局最新一组，新 run 清空旧组与亮灯，刷新页面由摘要恢复本局状态；摘要来自固定只读路由 `GET /api/jev-options`（不受 100 事件窗口限制，浏览器不能指定路径）。历史 schema v1 Trace 没有完整问题 option，页面只给兼容提示、不伪造点。主页同步调整：僵尸详情的行摘要跨整行，每只僵尸只显示名称、位置与血量；卡牌槽只有名称居中、下方一条由卡牌自身冷却计数（`cooldown_progress_raw`/`cooldown_total_raw`）驱动的进度条（就绪满格、冷却中按实际进度、无计数也无标志时为未知）以及右下角的纯数值费用（不再出现“阳光”字样），宽屏一行放下全部十张。三页均不再使用英文小标题与页脚注释。三个页面的控制区与状态提示文案也统一为中文（不再出现 READY/LIVE/START 之类的双语对照）。进程输出写到 `.log/jev-dashboard-process.log`。
 
 ## 语义动作（会操作游戏）
 
@@ -121,15 +121,17 @@ uv run python main.py jev-loop --max-cycles 20 --trace-file $trace
 uv run python main.py serve --jev-trace-file $trace
 ```
 
+直接运行 `uv run python main.py serve` 后也可在 `/jev` 点击 START；该操作需要同一份 `.env`。网页和命令行共用本仓库的单实例锁，上一个 JEV 进程退出前不能启动下一个。页面 STOP 只结束本页服务启动的子进程；游戏暂停、关卡结束、离开进行中或断连时，Loop 按下述原有判据自动停机。
+
 Runtime 默认持续观察：每次采样完成立刻继续，不加 100 ms/5 s 固定等待。`--interval-ms` 是可选的**观察限速**：省略或传 `0` 表示不引入额外观察等待；正整数值只限制观察的最小开始间隔（用 monotonic 计时，耗时已超间隔则不补睡，也不在 JEV 请求返回后再睡同样时长）；负值或非整数值属于启动失败，直接以退出码 2 结束，不会创建 Trace、不会发请求、也不会进入错误重试。网络超时仍由 SDK 配置决定，采样间隔不控制网络超时。
 
 两个 worker 共用单执行器。收集 worker 的 shared 请求同时询问是否收集、建设意图（保持/替换/取消）与下一建设类型，空 items 仍可判断经营。输入只含当前事实、实际余额/卡牌、计数、能力、模型意图与最近实际结果，不预给阵容方案、规模或布局；其中 `lane_composition` 是每行的己方构成计数（`resource`/`attacker`/`defender`，空行显式为 0，`plants` 不可用时整字段为 null），`board.column_direction` 只陈述列方向事实（列 0 = 房屋侧，最高列 = 僵尸来向，与 executor 的 `first_cell_center + col * horizontal_spacing` 几何一致），`cards[].role` 取自目录、未知为 null —— 三者都只是事实与语义，不含推荐、配额或布局答案。收集只用一个 typed Noul，模型只见物品类型/代码/数量；肯定回答授权来源样本冻结的全部有效 ID，本地逐件经 Boundary 按 ID 校验，Executor 获取即时坐标。新 ID 必须重新询问。若肯定回答在上一批仍在消费时到达，它保存为**一份 latest 未授权批**（后到覆盖先到）；当前批结束/取消/过期后按同一条 5 s 授权时效（自**被接受**时刻起算，不因出队或等待续期）消费，已消费/已完成的 ID 不再被选，超过时效或被他批覆盖都有丢弃记录，绝不静默丢失。PlantBranch 只问一个完整合法目标 Choice，由模型自己的弃选项（`none_of_the_above`）表达「不动手」，**没有绝对闸门、没有 confidence 门槛**，代码不重排、不替换目标。Choice 使用 argmax；收集 Noul 使用 `questions.py` 的显式锚点 `COLLECT_ACT_THRESHOLD = 0.5`，与 P02 的 `JEV_NOUL_CANDIDATE_THRESHOLD` 解耦。保留来源意图版本、真实预算/卡牌/位置、TTL、身份、停止与完整动作确认守卫；不预留阳光或预测收入。
 
-Trace 是 **schema v2** 的 JSONL 运行时事件：`job_start`、`request_result`、`proposal_discarded`、`action_result`、`job_end`、`runtime_stop`，由单一 writer 写出且 `event_sequence` 单调递增，用 `job_id`/`request_id`/`stage_id`/`execution_id`/`branch_id` 关联。每个任务记录样本年龄、API 延迟、排队时间、wait/discard 原因，以及**一次请求内的原子答案**（收集 `should_collect_now` 概率、目标 Choice 的完整分布）与**代码合并结论**（plant 的 `best_option`/`best_probability`/`discard_probability`/`margin`/`chosen_option`/`selected_option`/`target_choice_rule`，collect 的 `should_collect_probability`/`authorized_count`），用于复核「为什么动手或不动手」；它按任务写入，不为每个高频 observation 落盘，也不写原始 All State、原始 SDK 响应或凭据。Dashboard 同时识别旧 v1 周期文件与新 v2 事件文件：v1 仍按周期时间线呈现，v2 按分支/请求/执行事件呈现，并分别显示**决策完成顺序**与**实际执行顺序**（两者可能不同）；旧 v1 cycle 不会被伪装成分支事件。
+Trace 是 **schema v2** 的 JSONL 运行时事件：`job_start`、`request_result`、`proposal_discarded`、`action_result`、`job_end`、`runtime_stop`，由单一 writer 写出且 `event_sequence` 单调递增，用 `job_id`/`request_id`/`stage_id`/`execution_id`/`branch_id` 关联。每个任务记录样本年龄、API 延迟、排队时间、wait/discard 原因，以及**一次请求内的原子答案**（收集 `should_collect_now` 概率、目标 Choice 的完整分布）与**代码合并结论**（plant 的 `best_option`/`best_probability`/`discard_probability`/`margin`/`chosen_option`/`selected_option`/`target_choice_rule`，collect 的 `should_collect_probability`/`authorized_count`），用于复核「为什么动手或不动手」；它按任务写入，不为每个高频 observation 落盘，也不写原始 All State、原始 SDK 响应或凭据。Dashboard 同时识别旧 v1 周期文件与新 v2 事件文件：v1 没有完整的问题 option，页面只显示兼容提示；v2 由 `/api/jev-options` 汇总本局每类问题最近一次请求的完整 option：种植折叠为固定 5×9 草坪矩阵，收集按 option 平铺为点，只有与组内最新请求同源且 `boundary.status == success` 的动作点亮的点或格才代表实际执行，且本局内保持点亮。
 
 停止语义：暂停、关卡结束、目标进程退出/状态断连、连续三轮「重试预算耗尽的错误 job」、`--max-cycles` 达成、Ctrl+C 或 Trace 写入失败都会先关闭提交与派发闸门，作废在途 job 与 pending proposal；迟到回答不再派发，停止后零新请求，每个已启动的 job 都会写出 terminal/cancelled 的 `job_end`（停止时仍未处理的 proposal 记在 `runtime_stop.pending_proposals`）。正常 skip 与 `model_wait` 不计入错误。
 
-每次 Loop 都必须显式指定 `--trace-file`。若路径已有本应用的 JEV Trace（v1 或 v2），启动时会清空旧内容并写入新 run；这会丢失该路径之前的运行历史。若需要保留历史，请使用新路径。若路径指向非 Trace 文件、目录或符号链接，程序会拒绝覆盖并给出具体提示。Dashboard 只在显式设置相同的 `--jev-trace-file` 后显示该文件最近 100 个完整事件，且**不会**通过 HTTP 参数读取任意路径。Loop 与 Dashboard 可在不同终端独立运行。
+命令行运行每次 Loop 都必须显式指定 `--trace-file`；网页 START 使用 Dashboard 的固定 Trace 路径，默认 `.log/jev-dashboard.jsonl`。若路径已有本应用的 JEV Trace（v1 或 v2），启动时会清空旧内容并写入新 run；这会丢失该路径之前的运行历史。若需要保留历史，请使用新路径。若路径指向非 Trace 文件、目录或符号链接，程序会拒绝覆盖并给出具体提示。Dashboard 的 `/api/jev-trace` 显示其固定路径最近 100 个完整事件，option 点阵则由 `/api/jev-options` 增量投影（不受该窗口限制）；两者都只读固定路径，**不会**通过 HTTP 参数读取任意路径。Loop 与 Dashboard 可在不同终端独立运行，但单实例锁不允许它们同时各运行一个 JEV Loop。
 
 省略 `--max-cycles` 时 Loop 不设上限，会持续运行直到上述停止条件之一。需要有界演示或检查时才传入 `--max-cycles N`：它计的是**已终结的 DecisionJob** 数（观察、请求、动作分别统计，不参与该上限）。收尾时 stdout 单独输出四类计数，便于区分采样、请求与真实动作：
 

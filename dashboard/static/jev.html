@@ -3,27 +3,30 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#183a2b">
-  <title>JEV 时间线 · PvZ 只读监视器</title>
+  <meta name="theme-color" content="#090e1b">
+  <title>JEV Runtime · PvZ</title>
   <link rel="stylesheet" href="/static/style.css">
   <script src="/static/jev-page.js" defer></script>
 </head>
 <body class="jev-page">
   <header class="topbar">
     <div class="brand-mark" aria-hidden="true">✿</div>
-    <div class="brand-copy"><p class="eyebrow">READ ONLY · JEV RUNTIME</p><h1>JEV 时间线</h1></div>
+    <div class="brand-copy"><h1>JEV Runtime</h1></div>
     <nav class="page-nav" aria-label="页面导航">
-      <a href="/">草坪状态</a><a href="/state">State 观察</a><a class="active" href="/jev">JEV 时间线</a>
+      <a href="/">草坪状态</a><a href="/state">State 观察</a><a class="active" href="/jev">JEV Runtime</a>
     </nav>
   </header>
   <main class="jev-main">
-    <section class="panel jev-status-panel" aria-live="polite">
-      <div><p class="eyebrow">JSONL TRACE</p><h2 id="trace-status-title">正在读取时间线</h2></div>
-      <span id="trace-event-count" class="state-badge unavailable">等待数据</span>
+    <section id="jev-runtime" class="jev-hud" aria-label="JEV 决策控制">
+      <div class="jev-hud-bar">
+        <span class="jev-hud-tick" aria-hidden="true"></span>
+        <div class="runtime-buttons">
+          <button id="runtime-start" class="hud-btn hud-start" type="button" disabled aria-label="启动 JEV" title="启动"></button>
+          <button id="runtime-stop" class="hud-btn hud-stop" type="button" disabled aria-label="强制结束 JEV" title="强制结束"></button>
+        </div>
+      </div>
+      <section id="jev-timeline" class="jev-timeline" aria-label="本局决策网络"></section>
     </section>
-    <p id="trace-status-detail" class="jev-status-detail" role="status">正在连接只读 Trace 接口。</p>
-    <section id="jev-timeline" class="jev-timeline" aria-label="JEV 决策周期时间线"></section>
   </main>
-  <footer>只读时间线 · 本页不控制 Loop 或游戏动作</footer>
 </body>
 </html>

@@ -1,5 +1,7 @@
 import io
 import json
+import subprocess
+import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
@@ -8,6 +10,7 @@ from jev.client import REQUEST_TIMEOUT_SECONDS
 from jev.config import JevConfigurationError
 from jev.loop import JevLoopSummary, JevRuntimeCycle
 from main import build_parser, main, run_jev_loop
+from dashboard.runtime_control import RuntimeProcessLock
 
 
 def runtime_summary(**overrides):
@@ -43,6 +46,35 @@ def local_wait_cycle(*, sequence=9):
 
 
 class JevCliTests(unittest.TestCase):
+    def test_existing_loop_lock_rejects_second_cli_before_trace_open(self):
+        lock = RuntimeProcessLock()
+        self.assertTrue(lock.acquire())
+        try:
+            with patch("main.TraceRecorder") as recorder, redirect_stderr(io.StringIO()) as stderr:
+                result = run_jev_loop(interval_ms=0, max_cycles=None, trace_file="unused.jsonl")
+            self.assertEqual(result, 2)
+            self.assertIn("another JEV Loop", stderr.getvalue())
+            recorder.assert_not_called()
+        finally:
+            lock.release()
+
+    def test_lock_is_held_across_python_processes(self):
+        child = subprocess.Popen(
+            [sys.executable, "-c", "from dashboard.runtime_control import RuntimeProcessLock; import sys; lock=RuntimeProcessLock(); print(lock.acquire(), flush=True); sys.stdin.readline(); lock.release()"],
+            cwd=".", stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        try:
+            self.assertEqual(child.stdout.readline().strip(), "True")
+            self.assertTrue(RuntimeProcessLock.occupied())
+        finally:
+            child.stdin.write("\n")
+            child.stdin.flush()
+            child.wait(timeout=3)
+            child.stdout.close()
+            child.stderr.close()
+            child.stdin.close()
+        self.assertFalse(RuntimeProcessLock.occupied())
+
     def run_cli(self, argv, *, cycles=(), summary=None):
         """Run ``main`` with a fake Trace recorder, runtime loop, and environment."""
         summary = summary or runtime_summary()
