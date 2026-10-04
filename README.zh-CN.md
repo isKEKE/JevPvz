@@ -84,3 +84,13 @@ uv run python tools/evidence-plan-economy.py --trace-file .log/jev-dashboard.jso
 - [详细使用说明](docs/usage.md)：状态观察、仪表盘、动作、JEV、Python API 与实机验收。
 - [架构文档](docs/architecture.md)：模块职责、State 契约及 Runtime。
 - [内存字段文档](docs/memory-map.md)：字段来源与证据等级。
+
+## 许可证与使用边界
+
+本项目以源码公开形式发布，采用 [PolyForm Noncommercial License 1.0.0](LICENSE)。
+
+允许在许可证规定的用途范围内使用、学习、修改和分发本项目，包括非商业用途。商业用途不在本许可证的授权范围内。分发时须保留许可证文本或链接，以及规定的版权通知。具体授权条件以 `LICENSE` 完整正文为准。
+
+本项目包含游戏进程内存读取与自动操作功能。使用者应自行合法取得游戏，并确认其使用方式符合适用法律及游戏相关条款。本仓库不提供游戏程序。
+
+本项目许可证仅适用于作者有权许可的项目内容，不授予游戏本体、素材、商标或第三方组件的权利；第三方内容继续适用各自的许可。

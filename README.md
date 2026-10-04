@@ -84,3 +84,13 @@ uv run python tools/evidence-plan-economy.py --trace-file .log/jev-dashboard.jso
 - [Detailed usage guide (Chinese)](docs/usage.md): State observation, dashboard, actions, JEV, Python API, and live validation.
 - [Architecture](docs/architecture.md): module responsibilities, State contract, and runtime.
 - [Memory field evidence](docs/memory-map.md): field sources and evidence levels.
+
+## License and usage boundaries
+
+This project is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+
+Use, study, modification, and redistribution are permitted for the purposes allowed by the license, including noncommercial purposes. Commercial use is not authorized by this license. When distributing the project, retain the license terms or their URL and the required copyright notice. The complete terms in `LICENSE` govern.
+
+This project reads game process memory and can automate game input. Users must obtain the game legally and ensure their use complies with applicable law and relevant game terms. This repository does not distribute the game executable.
+
+The project license applies only to material the authors have the right to license. It grants no rights to the game itself, its assets or trademarks, or third-party components; third-party material remains subject to its respective licenses.
