@@ -52,7 +52,46 @@ uv run python main.py jev-loop --trace-file $trace
 uv run python main.py serve --jev-trace-file $trace
 ```
 
-`uv run python main.py serve` opens the lawn page, which now **embeds the JEV Runtime HUD** so the controls and the decision network can be recorded next to the game; `/jev` serves the same HUD on its own page. The HUD is a neon sci-fi panel whose only text is its accessibility labels: cyan ▶ starts and magenta ■ stops, with no status prose (the panel state drives which button is lit). Once the game is connected and playing, START launches one `jev-loop` child process; STOP terminates that child. A second Loop, including one launched from the CLI, is rejected while the first is active. Pausing, ending, or leaving the game ends the Loop through its existing stop rules. The page draws the current run as a left-to-right decision network: a derived intent layer (`收集`/`种植`/`取消`, lit for the branch this cycle actually reached), connecting links, then the concrete targets. The collection layer tiles **one point per option** of its latest request; the planting layer is the **fixed 5x9 lawn matrix**, where every board cell exists whether or not it was offered and lights when a proven placement named that cell. There are no visible text labels: every node and cell carries its name for hover and keyboard focus. A point or cell lights only when the summary proves that exact option executed: a same-job `action_result` with `boundary.status == success` whose target maps onto it (a successful plant's type/row/column, or a successful collection's `should_collect_now: true`), and a proven option **stays lit for the rest of the run** even after the question is asked again. Failed, unverified, discarded, model-only, and late older-job actions stay dark, management choices such as `construction_intent` never light, and missing evidence is shown as dark rather than inferred; model probability is never treated as execution. A new run clears the previous points, and a page refresh restores the current run from the summary route. A schema-v1 Trace has no complete option set, so the page only shows a compatibility notice instead of inventing points. On the lawn page the per-lane summary spans the full row and each zombie shows only its name, position, and HP; the seed cards keep the plant name centered over a recharge bar drawn from the card's own cooldown counters (full when ready, partial while recharging, indeterminate when unknown) with the sun cost as a plain number at the bottom right, staying in one row that fits all ten on a wide panel. English eyebrow labels and page footers were removed, so the UI is Chinese-only. A browser START needs the same `.env` JEV configuration as the CLI. Runtime process output is saved in `.log/jev-dashboard-process.log`.
+### Dashboard and runtime controls
+
+`uv run python main.py serve` opens the lawn page, which **embeds the JEV Runtime HUD** so the controls and the decision network can be recorded next to the game; `/jev` serves the same HUD on its own page.
+
+The HUD is a neon sci-fi panel whose only text is its accessibility labels. There is no status prose; the panel state drives which button is lit.
+
+- **Cyan ▶ / START**: launches one `jev-loop` child process once the game is connected and playing.
+- **Magenta ■ / STOP**: terminates that child process.
+- A second Loop, including one launched from the CLI, is rejected while the first is active.
+- Pausing, ending, or leaving the game ends the Loop through its existing stop rules.
+
+A browser START needs the same `.env` JEV configuration as the CLI. Runtime process output is saved in `.log/jev-dashboard-process.log`.
+
+### Decision network
+
+The page draws the current run from left to right: intent, connecting links, then concrete targets.
+
+- **Intent layer**: derived from the branches this cycle actually reached (`收集`/`种植`/`取消`), with the reached branch lit.
+- **Collection layer**: tiles **one point per option** of its latest request, with the point count changing as collectible options change.
+- **Planting layer**: the **fixed 5×9 lawn matrix**. Every board cell exists whether or not it was offered and lights when a proven placement named that cell.
+
+There are no visible text labels: every node and cell carries its name for hover and keyboard focus.
+
+A point or cell lights only when the summary proves all of the following:
+
+1. The `action_result` comes from the same `job_id` as the group's latest request.
+2. `boundary.status == success`.
+3. The target maps onto that exact option: a successful plant's type/row/column, or a successful collection's `should_collect_now: true`.
+
+A proven option **stays lit for the rest of the run**, even after the question is asked again. Failed, unverified, discarded, model-only, and late older-job actions stay dark; management choices such as `construction_intent` never light. Missing evidence is shown as dark rather than inferred, and model probability is never treated as execution.
+
+A new run clears the previous points, and a page refresh restores the current run from the summary route. A schema-v1 Trace has no complete option set, so the page only shows a compatibility notice instead of inventing points.
+
+### Lawn and seed card display
+
+- **Zombies**: the per-lane summary spans the full row, and each zombie shows only its name, position, and HP.
+- **Seed cards**: the plant name is centered over a recharge bar drawn from the card's own cooldown counters: full when ready, partial while recharging, and indeterminate when unknown. The sun cost is a plain number at the bottom right, and all ten cards fit in one row on a wide panel.
+- **Page language**: the UI is Chinese-only, with English eyebrow labels and page footers removed.
+
+### Run duration and Trace
 
 The loop runs until a stop condition occurs, such as level completion, game disconnection, or Ctrl+C. Use `--max-cycles 20` to limit the number of terminated decision jobs, or `--interval-ms 250` to limit observation frequency. `--trace-file` is required on every run. **Starting a new run clears an existing JEV Trace at that path**; choose a new path to keep earlier runs. See the [usage guide (Chinese)](docs/usage.md#jev-决策循环会操作游戏) for configuration, stop conditions, and Trace details.
 
