@@ -74,6 +74,12 @@ uv run python main.py action --action-json '{"action":"shovel_cell","row":0,"col
 uv run python -m unittest discover -s tests -p "test_*.py"
 ```
 
+离线重放一份冻结的 schema-2 Trace：重建其中一次 plant 决策，对照「旧规则只留目标类型」与「新规则目标为上下文 + surplus」的候选。只读，不调模型、不访问游戏。
+
+```powershell
+uv run python tools/evidence-plan-economy.py --trace-file .log/jev-dashboard.jsonl
+```
+
 - [JEV 能力报告](docs/jev-capability-analysis.md)：实机实验的发现与边界，建议优先阅读。
 - [详细使用说明](docs/usage.md)：状态观察、仪表盘、动作、JEV、Python API 与实机验收。
 - [架构文档](docs/architecture.md)：模块职责、State 契约及 Runtime。

@@ -55,6 +55,8 @@ from .strategy import (
     build_branch_state_key,
     build_plant_candidates,
     evaluate_strategy,
+    plant_spend_decision,
+    removable_cells,
 )
 
 MAX_CONSECUTIVE_ERROR_CYCLES = 3
@@ -694,14 +696,18 @@ class JevRuntimeLoop:
         self._maybe_stop_for_max_cycles()
 
     def _proposal_source_guard(self, proposal):
+        """The OD-22 dispatch guard: epoch, sample freshness, then plan version.
+
+        A plant target is not re-checked against the plan's type: the plan is
+        context, not an authorization premise (OD-43/R29), and the version check
+        already rejects a target derived from a plan that has since changed.
+        """
         if self._stopping or proposal.epoch != self._epoch: return "epoch_changed"
         latest = self._store.read() if self._store is not None else None
         if latest is not None and not self._admissible(latest): return "stale_sample"
         if proposal.branch == BRANCH_PLANT and proposal.source_intent_version is not None:
             if proposal.source_intent_version != self._intent_version or proposal.source_intent != self._intent:
                 return "intent_changed"
-            if self._intent is not None and proposal.target.get("type_name") != self._intent.get("type_name"):
-                return "intent_type_conflict"
         return None
 
     def _collect_condition(self, snapshot, identity):
@@ -1042,6 +1048,13 @@ class JevRuntimeLoop:
         The collect test uses the same ``all_state`` as the eventual request, so
         "there is something to ask" means exactly "at least one option can be bound
         to a verifiable item id" (OD-32) and never disagrees with the real builder.
+
+        The plant test uses the same spend decision the client uses, so a branch
+        that is saving toward its declared goal reports ``await_plan`` here and the
+        client can never conclude a different reason for the same sample. A request
+        is sent when there is a placement candidate *or* a removable cell (CD-09),
+        so an occupied board with no plantable cell is still asked; without a
+        removable cell every pre-existing conclusion stays exactly as it was.
         """
         if branch == BRANCH_COLLECT:
             return (
@@ -1049,14 +1062,15 @@ class JevRuntimeLoop:
                 if hasattr(self._client, "decide_shared") or build_collect_questions(jev_state, all_state=all_state).candidates
                 else "no_target"
             )
-        if hasattr(self._client, "decide_shared"):
-            if self._intent is not None:
-                jev_state = {**jev_state, "cards": [card for card in jev_state.get("cards") or [] if card.get("type_name") == self._intent.get("type_name")]}
-                signals = evaluate_strategy(jev_state)
-        if build_plant_candidates(jev_state, signals):
-            return None
-        if not signals.empty_plantable_cells:
+        removable = removable_cells(jev_state)
+        if not signals.empty_plantable_cells and not removable:
             return "no_target"
+        if hasattr(self._client, "decide_shared") and self._intent is not None:
+            hold = plant_spend_decision(signals, jev_state.get("cards"), self._intent).hold_reason
+            if hold is not None:
+                return hold
+        if build_plant_candidates(jev_state, signals, plan=self._intent) or removable:
+            return None
         return "await_cooldown" if _has_cooling_card(jev_state) else "await_resource"
 
     def _admissible(self, snapshot: RuntimeSnapshot) -> bool:
@@ -1239,7 +1253,12 @@ class JevRuntimeLoop:
                 self._cohort = [target for target in self._cohort if target.get("item_id") != identity]
         else:
             result_status = dispatch.result.get("status") if isinstance(dispatch.result, Mapping) else getattr(dispatch.result, "status", None)
-            self._last_result = {"action": "plant", "type_name": dispatch.proposal.target.get("type_name"), "row": dispatch.proposal.target.get("row"), "col": dispatch.proposal.target.get("col"), "outcome": dispatch.outcome, "status": result_status}
+            target = dispatch.proposal.target
+            # The recorded action is the target's own action (``place_plant`` or
+            # ``shovel_cell``), never a hard-coded "plant": this fact is handed back
+            # to the branch as its last actual result and is part of the collect
+            # branch key, so a removal must not read as a planting.
+            self._last_result = {"action": target.get("action"), "type_name": target.get("type_name"), "row": target.get("row"), "col": target.get("col"), "outcome": dispatch.outcome, "status": result_status}
         if dispatch.outcome == OUTCOME_DISCARDED:
             self._release_branch(dispatch.proposal, dispatch.reason)
         self._record_action(

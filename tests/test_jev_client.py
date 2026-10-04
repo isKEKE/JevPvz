@@ -55,11 +55,13 @@ from jev.questions import (
     PLANT_QUESTION_SPECS,
     PLANT_STATE_FIELDS,
     PLANT_TARGET_QUESTION_ID,
+    SHOVEL_TARGET_QUESTION_ID,
     load_plant_experience,
     plant_lane_question,
     plant_lane_target_question,
     plant_option_id,
     plant_target_question,
+    shovel_option_id,
 )
 from jev import client, questions
 from jev.strategy import BRANCH_COLLECT, BRANCH_PLANT
@@ -93,7 +95,7 @@ def choice_response(answers):
     )
 
 
-def jev_state(*, cards=None, items=None, plants=None, zombies=None, cells=None):
+def jev_state(*, cards=None, items=None, plants=None, zombies=None, cells=None, sun_balance=500):
     return {
         "schema_version": 1,
         "sample_sequence": 2104,
@@ -101,7 +103,7 @@ def jev_state(*, cards=None, items=None, plants=None, zombies=None, cells=None):
         "valid": True,
         "decision_ready": True,
         "game": {"phase": "playing", "mode": "adventure", "background": "day", "paused": False},
-        "sun_balance": 500,
+        "sun_balance": sun_balance,
         "board": {
             "rows": 5,
             "cols": 9,
@@ -201,14 +203,20 @@ def plant_answer(
     choice=None,
     weights=None,
     lane=None,
+    shovel=None,
+    shovel_weights=None,
 ):
-    """One complete plant fan-out answer: the offered placement Choice (or lane chain)."""
+    """One complete plant fan-out answer: the placement Choice (or lane chain), the shovel layer."""
     answers = {}
     for question_id, question in questions.items():
         if question_id == PLANT_LANE_QUESTION_ID:
             answers[question_id] = choice_for_question(question, choice=lane, confidence=confidence)
         elif question_id.startswith(PLANT_LANE_TARGET_QUESTION_PREFIX):
             answers[question_id] = choice_for_question(question, confidence=confidence)
+        elif question_id == SHOVEL_TARGET_QUESTION_ID:
+            answers[question_id] = choice_for_question(
+                question, choice=shovel, weights=shovel_weights, confidence=confidence
+            )
         elif question_id == PLANT_TARGET_QUESTION_ID:
             answers[question_id] = choice_for_question(
                 question, choice=choice, weights=weights, confidence=confidence
@@ -1325,6 +1333,202 @@ class BranchFanOutTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decision.target["action"], "place_plant")
 
 
+class PlantShovelLayerTests(unittest.IsolatedAsyncioTestCase):
+    """V15–V17/R11–R13: one plant request may also ask which occupied cell to clear."""
+
+    def shovel_state(self, *, sun=500, cards=PLANT_CARDS, occupied=((2, 3, "wall_nut"),), empty=True):
+        cells = empty_cells() if empty else [[False] * 9 for _ in range(5)]
+        plants = []
+        for row, col, type_name in occupied:
+            cells[row][col] = f"plant:{type_name}"
+            try:
+                code = plant_type_code(type_name)
+            except StopIteration:
+                code = 999
+            plants.append({"type_code": code, "type_name": type_name, "row": row, "col": col, "hp": 300})
+        return jev_state(sun_balance=sun, cards=list(cards), cells=cells, plants=plants)
+
+    async def decide_plant(self, state, *, response):
+        fake = FakeAsyncTypeSafeClient()
+        fake.responses = [response]
+        with patch.dict(os.environ, async_client_environment(), clear=True):
+            async with AsyncJevClient(client_factory=lambda: fake) as client:
+                decision = await client.decide_plant(state)
+        return decision, fake
+
+    async def test_one_request_carries_the_placement_and_the_shovel_layer(self):
+        state = self.shovel_state()
+        question_set = build_plant_questions(state)
+        self.assertEqual(
+            set(question_set.questions), {PLANT_TARGET_QUESTION_ID, SHOVEL_TARGET_QUESTION_ID}
+        )
+        self.assertEqual(
+            [level.question_id for level in question_set.choice_levels],
+            [PLANT_TARGET_QUESTION_ID, SHOVEL_TARGET_QUESTION_ID],
+        )
+        self.assertEqual([level.level for level in question_set.choice_levels], [1, 2])
+        shovel_level = question_set.choice_levels[-1]
+        self.assertEqual(
+            shovel_level.targets[shovel_option_id(2, 3)],
+            {"action": "shovel_cell", "row": 2, "col": 3},
+        )
+        self.assertEqual(shovel_level.targets[DISCARD_OPTION_ID], {})
+        self.assertEqual({question.type for question in question_set.questions.values()}, {"choice"})
+
+        decision, fake = await self.decide_plant(
+            state, response=plant_answer(question_set.questions)
+        )
+        self.assertEqual(len(fake.calls), 1)
+        self.assertEqual(set(fake.calls[0]["questions"]), set(question_set.questions))
+        self.assertEqual(decision.intent, "plant")
+        self.assertEqual(decision.status, "selected")
+        self.assertEqual(decision.effective_action, "shovel")
+        self.assertEqual(decision.target, {"action": "shovel_cell", "row": 2, "col": 3})
+
+    async def test_a_board_without_a_removable_cell_adds_no_shovel_layer(self):
+        question_set = build_plant_questions(jev_state(cards=list(PLANT_CARDS), cells=empty_cells()))
+        self.assertEqual(set(question_set.questions), {PLANT_TARGET_QUESTION_ID})
+        self.assertEqual([level.level for level in question_set.choice_levels], [1])
+
+    async def test_an_occupied_board_with_no_placement_still_asks_the_shovel_layer(self):
+        state = self.shovel_state(empty=False, cards=[plant_card(5, "snow_pea", 175, slot=4)], sun=100)
+        question_set = build_plant_questions(state)
+        self.assertEqual(set(question_set.questions), {SHOVEL_TARGET_QUESTION_ID})
+        self.assertEqual(question_set.candidates, ())
+        self.assertEqual([level.level for level in question_set.choice_levels], [1])
+
+        decision, fake = await self.decide_plant(
+            state, response=plant_answer(question_set.questions)
+        )
+        self.assertEqual(len(fake.calls), 1)
+        self.assertEqual(set(fake.calls[0]["questions"]), {SHOVEL_TARGET_QUESTION_ID})
+        self.assertEqual(decision.target, {"action": "shovel_cell", "row": 2, "col": 3})
+
+    async def test_a_discarded_shovel_layer_waits(self):
+        state = self.shovel_state(empty=False)
+        question_set = build_plant_questions(state)
+        decision, fake = await self.decide_plant(
+            state, response=plant_answer(question_set.questions, shovel=DISCARD_OPTION_ID)
+        )
+        self.assertEqual(len(fake.calls), 1)
+        self.assertEqual(decision.status, "model_wait")
+        self.assertEqual(decision.effective_action, "wait")
+        self.assertIsNone(decision.target)
+        self.assertIs(decision.answers["merge"]["shovel_selected"], False)
+        self.assertIs(decision.answers["merge"]["shovel_discarded"], True)
+
+    async def test_a_flat_tie_with_the_shovel_discard_option_waits(self):
+        state = self.shovel_state(empty=False)
+        question_set = build_plant_questions(state)
+        option = shovel_option_id(2, 3)
+        tie, _ = await self.decide_plant(
+            state,
+            response=plant_answer(
+                question_set.questions,
+                shovel=option,
+                shovel_weights={option: 0.5, DISCARD_OPTION_ID: 0.5},
+            ),
+        )
+        self.assertEqual(tie.status, "model_wait")
+        self.assertIsNone(tie.target)
+        self.assertEqual(tie.answers["merge"]["shovel_margin"], 0.0)
+
+        won, _ = await self.decide_plant(
+            state,
+            response=plant_answer(
+                question_set.questions,
+                shovel=option,
+                shovel_weights={option: 0.51, DISCARD_OPTION_ID: 0.49},
+            ),
+        )
+        self.assertEqual(won.status, "selected")
+        self.assertEqual(won.target["action"], "shovel_cell")
+
+    async def test_a_selected_shovel_drops_a_selected_placement_with_a_record(self):
+        state = self.shovel_state()
+        question_set = build_plant_questions(state)
+        placement = plant_option_id("peashooter", 0, 0)
+        decision, fake = await self.decide_plant(
+            state,
+            response=plant_answer(
+                question_set.questions,
+                choice=placement,
+                weights={placement: 0.8},
+                shovel=shovel_option_id(2, 3),
+                shovel_weights={shovel_option_id(2, 3): 0.9},
+            ),
+        )
+        self.assertEqual(len(fake.calls), 1)
+        merge = decision.answers["merge"]
+        self.assertEqual(decision.target, {"action": "shovel_cell", "row": 2, "col": 3})
+        self.assertIs(merge["shovel_overrode_placement"], True)
+        self.assertEqual(merge["overridden_placement_option"], placement)
+        self.assertEqual(merge["selected_option"], shovel_option_id(2, 3))
+        self.assertEqual(merge["best_option"], placement)
+        self.assertTrue(merge["shovel_selected"])
+
+    async def test_a_discarded_shovel_layer_keeps_the_selected_placement(self):
+        state = self.shovel_state()
+        question_set = build_plant_questions(state)
+        placement = plant_option_id("peashooter", 0, 0)
+        decision, _ = await self.decide_plant(
+            state,
+            response=plant_answer(
+                question_set.questions,
+                choice=placement,
+                weights={placement: 0.8},
+                shovel=DISCARD_OPTION_ID,
+            ),
+        )
+        merge = decision.answers["merge"]
+        self.assertEqual(decision.target["action"], "place_plant")
+        self.assertIs(merge["shovel_overrode_placement"], False)
+        self.assertIs(merge["shovel_discarded"], True)
+
+    async def test_the_shovel_option_text_states_only_facts(self):
+        state = self.shovel_state()
+        question = build_plant_questions(state).questions[SHOVEL_TARGET_QUESTION_ID]
+        option = question.criteria[shovel_option_id(2, 3)]
+        self.assertEqual(option["type_name"], "wall_nut")
+        self.assertEqual(option["role"], "defender")
+        self.assertEqual(option["lane"], 2)
+        self.assertEqual(option["column"], 3)
+        self.assertTrue(question.criteria[DISCARD_OPTION_ID]["what"].startswith("No removal"))
+        self.assertIn("state.economy", question.instructions)
+        self.assertIn("sun_above_plan", question.instructions)
+        text = json.dumps(question.model_dump(exclude_none=True), ensure_ascii=False).lower()
+        for banned in ("should", "recommend", "advice", "priority", "suggest", "best ", "first ", "must ", "always"):
+            self.assertNotIn(banned, text)
+
+    async def test_the_shovel_layer_follows_a_split_placement_chain(self):
+        state = self.shovel_state(cards=(*PLANT_CARDS, *PLANT_CARDS_BEYOND_THE_CAP), sun=1000)
+        question_set = build_plant_questions(state)
+        self.assertTrue(question_set.split)
+        self.assertEqual(
+            [level.level for level in question_set.choice_levels][:2], [1, 2]
+        )
+        shovel_level = question_set.choice_levels[-1]
+        self.assertEqual(shovel_level.question_id, SHOVEL_TARGET_QUESTION_ID)
+        self.assertGreater(shovel_level.level, 1)
+
+        decision, fake = await self.decide_plant(
+            state,
+            response=plant_answer(
+                question_set.questions, lane="lane_2", shovel=DISCARD_OPTION_ID
+            ),
+        )
+        self.assertEqual(len(fake.calls), 1)
+        self.assertEqual(decision.target["action"], "place_plant")
+        self.assertEqual(decision.target["row"], 2)
+
+    async def test_an_uncatalogued_plant_cell_is_stated_with_a_null_role(self):
+        state = self.shovel_state(occupied=((1, 2, "unknown_plant"),), empty=False)
+        question = build_plant_questions(state).questions[SHOVEL_TARGET_QUESTION_ID]
+        option = question.criteria[shovel_option_id(1, 2)]
+        self.assertEqual(option["type_name"], "unknown_plant")
+        self.assertIsNone(option["role"])
+
+
 class AsyncJevClientDefaultTransportTests(unittest.TestCase):
     def test_default_transport_opens_the_official_async_sdk_client(self):
         created = []
@@ -1635,6 +1839,12 @@ class PlantInstructionsGuidanceTests(unittest.TestCase):
             self.assertIn("state.observed_lanes", instructions)
             self.assertIn("outranks any long-term layout preference", instructions)
 
+    def test_all_three_state_the_resource_facts_and_the_offer_rule(self):
+        for instructions in self.plant_instructions():
+            self.assertIn("state.economy", instructions)
+            self.assertIn("sun_above_plan", instructions)
+            self.assertIn("saving for a plan you cannot pay for yet", instructions)
+
     def test_all_three_include_every_bundled_experience_line(self):
         guidance = load_plant_experience()
         self.assertTrue(guidance)
@@ -1685,3 +1895,134 @@ class PlantInstructionsGuidanceTests(unittest.TestCase):
                     jev_state(cards=[plant_card(1, "sunflower", 50)], plants=[], cells=empty_cells())
                 )
                 self.assertTrue(question_set.questions)
+
+
+class PlantPlanEconomyAcceptanceTests(unittest.IsolatedAsyncioTestCase):
+    """Case A / Case B at the request layer.
+
+    Both reproduced problems lived here: the plant request used to filter the hand
+    down to the model's last declared construction type (Case B: 8175 sun, ten
+    types in hand, one type offered), and no resource fact between
+    ``sun_balance`` and the offer existed (Case A: spend whatever is payable now).
+    """
+
+    def state(self, *, sun, cards=PLANT_CARDS, cells=None):
+        return jev_state(
+            sun_balance=sun,
+            cards=list(cards),
+            cells=cells if cells is not None else empty_cells(),
+            plants=[],
+            zombies=[],
+        )
+
+    SNOW_PEA = plant_card(5, "snow_pea", 175, slot=4)
+    POTATO_MINE = plant_card(4, "potato_mine", 25, slot=3)
+
+    async def decide_plant(self, state, *, response=None, intent=None):
+        fake = FakeAsyncTypeSafeClient()
+        fake.responses = [] if response is None else [response]
+        environment = async_client_environment()
+        with patch.dict(os.environ, environment, clear=True):
+            async with AsyncJevClient(client_factory=lambda: fake) as client:
+                decision = await client.decide_plant(state, intent=intent)
+        return decision, fake
+
+    async def test_case_b_the_declared_goal_no_longer_removes_the_rest_of_the_hand(self):
+        cards = (*PLANT_CARDS, self.POTATO_MINE, self.SNOW_PEA)
+        state = self.state(sun=8175, cards=cards)
+        plan = {"type_name": "sunflower"}
+        questions = build_plant_questions(state, plan=plan).questions
+        criteria = questions[PLANT_TARGET_QUESTION_ID].criteria
+        for type_name in ("sunflower", "wall_nut", "peashooter", "potato_mine", "snow_pea"):
+            self.assertIn(f"{type_name}@r0c0", criteria, type_name)
+
+        decision, fake = await self.decide_plant(
+            state, response=plant_answer(questions), intent=plan
+        )
+        sent = fake.calls[0]["state"]
+        self.assertEqual(
+            [card["type_name"] for card in sent["cards"]],
+            ["peashooter", "sunflower", "wall_nut", "potato_mine", "snow_pea"],
+        )
+        self.assertEqual(sent["economy"]["band"], "abundant")
+        self.assertEqual(sent["economy"]["highest_cost"], 175)
+        self.assertEqual(sent["economy"]["plan"]["type_name"], "sunflower")
+        self.assertEqual(sent["economy"]["sun_above_plan"], 8125)
+        self.assertEqual(decision.status, "selected")
+
+    async def test_case_a_an_unpayable_goal_sends_no_request_and_waits(self):
+        state = self.state(sun=75, cards=(*PLANT_CARDS, self.SNOW_PEA))
+        decision, fake = await self.decide_plant(state, intent={"type_name": "snow_pea"})
+        self.assertEqual(fake.calls, [])
+        self.assertEqual(decision.effective_action, "wait")
+        self.assertEqual(decision.fallback_reason, "await_plan")
+        self.assertEqual(decision.status, "skipped_no_targets")
+
+    async def test_a_payable_goal_states_its_surplus_and_keeps_the_cheaper_hand(self):
+        state = self.state(sun=200)
+        plan = {"type_name": "peashooter"}
+        questions = build_plant_questions(state, plan=plan).questions
+        criteria = questions[PLANT_TARGET_QUESTION_ID].criteria
+        self.assertIn("peashooter@r0c0", criteria)
+        self.assertIn("sunflower@r0c0", criteria)
+        self.assertIn("wall_nut@r0c0", criteria)
+
+        _, fake = await self.decide_plant(state, response=plant_answer(questions), intent=plan)
+        sent = fake.calls[0]["state"]
+        self.assertEqual(
+            sent["economy"],
+            {
+                "sun": 200,
+                "band": "abundant",
+                "cheapest_cost": 50,
+                "highest_cost": 100,
+                "sun_above_plan": 100,
+                "plan": {
+                    "type_name": "peashooter",
+                    "cost": 100,
+                    "payable": True,
+                    "shortfall": 0,
+                },
+            },
+        )
+
+    async def test_a_goal_above_the_balance_states_its_shortfall_without_a_surplus(self):
+        state = self.state(sun=75, cards=(*PLANT_CARDS, self.SNOW_PEA))
+        # A zombie at the door overrides the save, so a request is really sent.
+        state["zombies"] = [
+            {"type_code": 0, "type_name": "normal_zombie", "row": 0, "distance_to_house_cells": 2}
+        ]
+        plan = {"type_name": "snow_pea"}
+        questions = build_plant_questions(state, plan=plan).questions
+        _, fake = await self.decide_plant(state, response=plant_answer(questions), intent=plan)
+        economy = fake.calls[0]["state"]["economy"]
+        self.assertEqual(economy["plan"]["type_name"], "snow_pea")
+        self.assertEqual(economy["plan"]["cost"], 175)
+        self.assertEqual(economy["plan"]["payable"], False)
+        self.assertEqual(economy["plan"]["shortfall"], 100)
+        self.assertIsNone(economy["sun_above_plan"])
+
+    def test_the_management_type_options_state_the_price_position_in_hand(self):
+        from jev.questions import management_questions
+
+        cards = tuple(
+            {
+                "type_name": name,
+                "cost": cost,
+                "payable": True,
+                "shortfall": 0,
+                "usable": True,
+                "cooldown_ready": True,
+                "description_en": "an ability",
+                "role": "attacker",
+            }
+            for name, cost in (("sunflower", 50), ("peashooter", 100), ("snow_pea", 175), ("melon_pult", 300))
+        )
+        questions = management_questions(cards, economy={"band": "abundant", "plan": None})
+        criteria = questions["next_construction_type"].criteria
+        self.assertIn("low price in hand", criteria["sunflower"])
+        self.assertIn("mid price in hand", criteria["snow_pea"])
+        self.assertIn("high price in hand", criteria["melon_pult"])
+        self.assertIn("state.economy.plan", questions["construction_intent"].instructions)
+        without_economy = management_questions(cards)
+        self.assertNotIn("state.economy.plan", without_economy["construction_intent"].instructions)

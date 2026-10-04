@@ -14,11 +14,20 @@ from jev.strategy import (
     ECONOMY_SIGNALS,
     PHASES,
     URGENCY_BANDS,
+    LANE_RESPONSE_URGENCIES,
     build_branch_state_key,
     build_collect_branch_state_key,
     build_plant_candidates,
+    card_costs,
+    card_price_band,
+    economy_band,
+    economy_facts,
     evaluate_strategy,
+    lane_needs_response,
     management_facts,
+    plant_role_by_name,
+    plant_spend_decision,
+    removable_cells,
     urgency_band,
 )
 
@@ -583,6 +592,54 @@ class PlantCandidateTests(unittest.TestCase):
         self.assertEqual(build_plant_candidates(unknown), [])
 
 
+class RemovableCellTests(unittest.TestCase):
+    """V16/R12: removable candidates come from ``plant:<name>`` cells only."""
+
+    def test_only_plant_encoded_cells_are_offered_in_row_then_column_order(self):
+        cells = empty_cells()
+        cells[2][3] = "plant:wall_nut"
+        cells[0][1] = "plant:peashooter"
+        self.assertEqual(
+            removable_cells(jev_state(cells=cells)),
+            ((0, 1, "peashooter"), (2, 3, "wall_nut")),
+        )
+
+    def test_placeholder_and_non_string_values_are_ignored(self):
+        cells = empty_cells()
+        cells[0][0] = False
+        cells[0][1] = "unknown"
+        cells[0][2] = "plant:"
+        cells[0][3] = "plant"
+        cells[0][4] = 3
+        cells[0][5] = True
+        self.assertEqual(removable_cells(jev_state(cells=cells)), ())
+
+    def test_a_missing_or_malformed_board_is_empty_occupancy(self):
+        for cells in (None, [], [[None] * 9], "plant:peashooter", [None] * 5):
+            with self.subTest(cells=cells):
+                state = jev_state()
+                state["board"]["cells"] = cells
+                self.assertEqual(removable_cells(state), ())
+        self.assertEqual(removable_cells({}), ())
+        self.assertEqual(removable_cells({"board": None}), ())
+
+    def test_an_uncatalogued_type_name_stays_a_fact_with_no_role(self):
+        # The board cell carries no type code, so an unknown (for example modded)
+        # name is stated as a fact instead of being resolved to another plant.
+        cells = empty_cells()
+        cells[1][2] = "plant:unknown_plant"
+        self.assertEqual(removable_cells(jev_state(cells=cells)), ((1, 2, "unknown_plant"),))
+        self.assertIsNone(plant_role_by_name("unknown_plant"))
+        self.assertEqual(plant_role_by_name("wall_nut"), "defender")
+        self.assertIsNone(plant_role_by_name(None))
+
+    def test_cells_the_board_reports_as_empty_are_never_removable(self):
+        self.assertEqual(removable_cells(jev_state(cells=empty_cells())), ())
+        cells = empty_cells()
+        cells[4][8] = "plant:sunflower"
+        self.assertEqual(removable_cells(jev_state(cells=cells)), ((4, 8, "sunflower"),))
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -767,3 +824,191 @@ class ThreatLabelFactsTests(unittest.TestCase):
         text = json.dumps(labelled["zombies"] + labelled["observed_lanes"])
         for number in ("270", "distance", "hp"):
             self.assertNotIn(number, text)
+
+
+class EconomyPlanAcceptanceTests(unittest.TestCase):
+    """Case A / Case B: the balance band and the declared goal drive the offer.
+
+    The reproduced problems were one missing layer, not two thresholds: the hand
+    was filtered down to whichever type the shared branch last declared, and no
+    resource fact existed between ``sun_balance`` and the candidate list. Case B
+    is about that filter (8175 sun, ten types in hand, one type offered); Case A
+    is about the missing goal/surplus rule (spend whatever is payable now instead
+    of keeping what the declared goal still needs).
+    """
+
+    CARDS = (
+        card(1, "sunflower", 50, slot=0),
+        card(0, "peashooter", 100, slot=1),
+        card(2, "snow_pea", 175, slot=2),
+        card(3, "melon_pult", 300, slot=3),
+    )
+
+    def signals(self, sun, *, zombies=None, cards=None, cells=None):
+        return evaluate_strategy(
+            jev_state(sun_balance=sun, cards=list(cards or self.CARDS), zombies=zombies, cells=cells)
+        )
+
+    def test_economy_band_uses_the_hand_ladder_not_a_configured_sun_number(self):
+        costs = card_costs(self.CARDS)
+        self.assertEqual(costs, (50, 100, 175, 300))
+        self.assertEqual(economy_band(0, costs), "scarce")
+        self.assertEqual(economy_band(25, costs), "scarce")
+        self.assertEqual(economy_band(50, costs), "normal")
+        self.assertEqual(economy_band(174, costs), "normal")
+        self.assertEqual(economy_band(175, costs), "comfortable")
+        self.assertEqual(economy_band(299, costs), "comfortable")
+        self.assertEqual(economy_band(300, costs), "abundant")
+        self.assertEqual(economy_band(8175, costs), "abundant")
+        self.assertIsNone(economy_band(None, costs))
+        self.assertIsNone(economy_band(50, ()))
+
+    def test_price_band_labels_one_card_against_the_current_hand(self):
+        costs = card_costs(self.CARDS)
+        self.assertEqual(card_price_band(50, costs), "low")
+        self.assertEqual(card_price_band(100, costs), "low")
+        self.assertEqual(card_price_band(175, costs), "mid")
+        self.assertEqual(card_price_band(300, costs), "high")
+        self.assertIsNone(card_price_band(None, costs))
+        self.assertIsNone(card_price_band(70, costs))
+        self.assertEqual(card_price_band(50, (50,)), "mid")
+        self.assertEqual(card_price_band(50, ()), None)
+
+    def test_case_b_an_abundant_balance_no_longer_hides_the_higher_cost_types(self):
+        state = jev_state(sun_balance=8175, cards=list(self.CARDS))
+        signals = evaluate_strategy(state)
+        offered = {
+            entry["type_name"]
+            for entry in build_plant_candidates(state, signals, plan={"type_name": "sunflower"})
+        }
+        self.assertEqual(offered, {"sunflower", "peashooter", "snow_pea", "melon_pult"})
+
+    def test_case_a_an_unpayable_goal_holds_instead_of_offering_cheaper_plants(self):
+        state = jev_state(sun_balance=150, cards=list(self.CARDS))
+        signals = evaluate_strategy(state)
+        decision = plant_spend_decision(signals, self.CARDS, {"type_name": "melon_pult"})
+        self.assertEqual(decision.type_names, frozenset())
+        self.assertEqual(decision.hold_reason, "await_plan")
+        self.assertEqual(
+            build_plant_candidates(state, signals, plan={"type_name": "melon_pult"}), []
+        )
+
+    def test_a_payable_goal_only_spends_what_is_left_above_its_own_price(self):
+        plan = {"type_name": "melon_pult"}
+        tight = plant_spend_decision(self.signals(320), self.CARDS, plan)
+        self.assertIsNone(tight.hold_reason)
+        self.assertEqual(tight.type_names, frozenset({"melon_pult"}))
+        slack = plant_spend_decision(self.signals(400), self.CARDS, plan)
+        self.assertEqual(slack.type_names, frozenset({"melon_pult", "sunflower", "peashooter"}))
+        huge = plant_spend_decision(self.signals(8175), self.CARDS, plan)
+        self.assertEqual(huge.type_names, frozenset({"melon_pult", "sunflower", "peashooter", "snow_pea"}))
+
+    def test_a_lane_that_cannot_stop_what_is_in_it_outranks_the_goal(self):
+        signals = self.signals(150, zombies=[zombie(0, distance=6)])
+        self.assertTrue(lane_needs_response(signals.rows))
+        decision = plant_spend_decision(signals, self.CARDS, {"type_name": "melon_pult"})
+        self.assertIsNone(decision.hold_reason)
+        self.assertEqual(decision.type_names, signals.affordable)
+
+    def test_a_medium_lane_band_keeps_saving_and_high_does_not(self):
+        # CD-02: the interrupt set is {high, critical}. The lane under test holds an
+        # attacker on purpose, so the separate "zombie with nothing able to attack
+        # it" condition cannot answer for it and the band really is the reason.
+        self.assertEqual(LANE_RESPONSE_URGENCIES, frozenset({"high", "critical"}))
+        cells = empty_cells()
+        cells[0][2] = "plant:peashooter"
+        plants = [plant(0, "peashooter", 0, 2)]
+        goal = {"type_name": "melon_pult"}
+        medium = evaluate_strategy(
+            jev_state(
+                sun_balance=150,
+                cards=list(self.CARDS),
+                zombies=[zombie(0, distance=4)],
+                cells=cells,
+                plants=plants,
+            )
+        )
+        self.assertEqual(medium.rows[0].urgency, "medium")
+        self.assertEqual(medium.rows[0].attacker_count, 1)
+        self.assertFalse(lane_needs_response(medium.rows))
+        self.assertEqual(
+            plant_spend_decision(medium, self.CARDS, goal).hold_reason, "await_plan"
+        )
+        high = evaluate_strategy(
+            jev_state(
+                sun_balance=150,
+                cards=list(self.CARDS),
+                zombies=[zombie(0, distance=3)],
+                cells=cells,
+                plants=plants,
+            )
+        )
+        self.assertEqual(high.rows[0].urgency, "high")
+        self.assertTrue(lane_needs_response(high.rows))
+        decision = plant_spend_decision(high, self.CARDS, goal)
+        self.assertIsNone(decision.hold_reason)
+        self.assertEqual(decision.type_names, high.affordable)
+
+    def test_a_distant_zombie_in_a_defended_lane_keeps_saving(self):
+        cells = empty_cells()
+        cells[0][2] = "plant:peashooter"
+        state = jev_state(
+            sun_balance=150,
+            cards=list(self.CARDS),
+            zombies=[zombie(0, distance=8)],
+            cells=cells,
+            plants=[plant(0, "peashooter", 0, 2)],
+        )
+        signals = evaluate_strategy(state)
+        self.assertEqual(signals.rows[0].urgency, "low")
+        self.assertEqual(signals.rows[0].attacker_count, 1)
+        self.assertEqual(
+            plant_spend_decision(signals, self.CARDS, {"type_name": "melon_pult"}).hold_reason,
+            "await_plan",
+        )
+
+    def test_no_plan_keeps_the_full_enumeration_and_never_holds(self):
+        signals = self.signals(150)
+        decision = plant_spend_decision(signals, self.CARDS, None)
+        self.assertEqual(decision.type_names, signals.affordable)
+        self.assertIsNone(decision.hold_reason)
+
+    def test_a_malformed_stale_or_unknown_goal_narrows_nothing(self):
+        signals = self.signals(150)
+        for plan in ({}, {"type_name": "not_in_hand"}, {"type_name": None}, "melon_pult", {"type_name": ""}):
+            with self.subTest(plan=plan):
+                decision = plant_spend_decision(signals, self.CARDS, plan)
+                self.assertEqual(decision.type_names, signals.affordable)
+                self.assertIsNone(decision.hold_reason)
+
+    def test_economy_facts_state_the_band_the_goal_and_its_surplus(self):
+        state = jev_state(sun_balance=8175, cards=list(self.CARDS))
+        facts = economy_facts(state, {"type_name": "melon_pult"})
+        self.assertEqual(facts["band"], "abundant")
+        self.assertEqual(facts["cheapest_cost"], 50)
+        self.assertEqual(facts["highest_cost"], 300)
+        self.assertEqual(facts["sun_above_plan"], 7875)
+        self.assertEqual(
+            facts["plan"],
+            {"type_name": "melon_pult", "cost": 300, "payable": True, "shortfall": 0},
+        )
+        unpaid = economy_facts(jev_state(sun_balance=75, cards=list(self.CARDS)), {"type_name": "melon_pult"})
+        self.assertEqual(unpaid["plan"]["payable"], False)
+        self.assertEqual(unpaid["plan"]["shortfall"], 225)
+        self.assertIsNone(unpaid["sun_above_plan"])
+        self.assertIsNone(economy_facts(state, None)["plan"])
+        unknown_balance = economy_facts(
+            jev_state(sun_balance=None, cards=list(self.CARDS)), {"type_name": "sunflower"}
+        )
+        self.assertIsNone(unknown_balance["plan"]["payable"])
+        self.assertIsNone(unknown_balance["band"])
+
+    def test_management_facts_carry_the_economy_group_without_inventing_a_goal(self):
+        facts = management_facts(jev_state(sun_balance=75, cards=list(self.CARDS)))
+        self.assertEqual(facts["economy"]["band"], "normal")
+        self.assertIsNone(facts["economy"]["plan"])
+        self.assertIsNone(facts["economy"]["sun_above_plan"])
+        with_goal = management_facts(
+            jev_state(sun_balance=75, cards=list(self.CARDS)), None, {"type_name": "peashooter"}
+        )
+        self.assertEqual(with_goal["economy"]["plan"]["shortfall"], 25)

@@ -13,14 +13,16 @@ comparison is computed in code so no model has to do arithmetic.
 
 Authorities: OD-22 (数值与口径 — branch keys, urgency thresholds, "raw distance
 and raw HP never enter a key"), OD-30 (ordered urgency bands plus explicit
-component facts), OD-15 (full candidate enumeration, no local shortlist), and
-OD-29 (resource layer never predicts output or reserves sun).
+component facts), OD-15 (candidate enumeration), OD-29 (the resource layer never
+predicts output) and OD-37/R27 (the model owns the construction goal: the
+economy layer here only states the balance band, the declared plan's price, and
+what the balance above that price can pay for; it never picks a plant).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Hashable, Mapping
+from typing import Any, Hashable, Mapping, Sequence
 
 from configs.plant_catalog import PLANTS, plant_info
 
@@ -34,7 +36,32 @@ PHASES: tuple[str, ...] = ("economy", "development", "defense", "emergency", "re
 
 DEFAULT_ROW_COUNT = 5
 
+ECONOMY_BANDS: tuple[str, ...] = ("scarce", "normal", "comfortable", "abundant")
+"""Ordered balance bands, each boundary taken from the hand's own prices."""
+
+PLAN_HOLD_REASON = "await_plan"
+"""Local wait reason: the declared construction cannot be paid for yet."""
+
+LANE_RESPONSE_URGENCIES: frozenset[str] = frozenset({"high", "critical"})
+"""OD-30 bands close enough that a lane may not be left alone for a later goal.
+
+``medium`` (a zombie still four to five cells out) is deliberately excluded: that
+is still acceptable progress, so saving the declared goal's sun is worth more than
+spending it on the lane now (CD-02). A lane that cannot stop what is in it is
+covered by the separate condition in :func:`lane_needs_response`, not by a wider
+band set here.
+"""
+
 _ROLE_BY_PLANT_NAME = {plant.name: plant.role for plant in PLANTS}
+
+
+def plant_role_by_name(type_name: Any) -> str | None:
+    """The catalog role of one plant *type name*, or ``None`` when it is unknown.
+
+    A board cell encodes an occupied cell as ``plant:<type_name>`` and carries no
+    type code, so this is how that cell's role is stated without inventing one.
+    """
+    return _ROLE_BY_PLANT_NAME.get(type_name) if isinstance(type_name, str) else None
 
 
 def _is_number(value: Any) -> bool:
@@ -52,10 +79,7 @@ def _role_of(plant: Mapping[str, Any]) -> str | None:
     info = plant_info(plant.get("type_code"))
     if info is not None:
         return info.role
-    type_name = plant.get("type_name")
-    if isinstance(type_name, str):
-        return _ROLE_BY_PLANT_NAME.get(type_name)
-    return None
+    return plant_role_by_name(plant.get("type_name"))
 
 
 def _description_of(plant: Mapping[str, Any]) -> str | None:
@@ -176,6 +200,225 @@ def _read_economy_signal(cards: Any, affordable: frozenset[str]) -> str:
     if any(card.get("type_name") in affordable for card in resource_cards):
         return "expand"
     return "hold"
+
+
+def card_costs(cards: Any) -> tuple[int, ...]:
+    """Every non-negative integer price in hand, sorted ascending.
+
+    ``costs`` is the price ladder of *this hand*: the economy layer compares the
+    balance with it instead of with any configured sun number, so the same code
+    works for a 50-sun sunflower hand and for a 300-sun melon hand.
+    """
+    if not isinstance(cards, (list, tuple)):
+        return ()
+    prices = [card.get("cost") for card in cards if isinstance(card, Mapping)]
+    return tuple(sorted(price for price in prices if type(price) is int and price >= 0))
+
+
+def card_price_band(cost: Any, costs: Sequence[int]) -> str | None:
+    """One card's price position in this hand: ``low``, ``mid``, or ``high``.
+
+    The two cuts are thirds of the hand's own distinct price ladder counted by
+    position, so the label is comparative and needs no configured cost. A
+    single-price hand has no position and reports ``mid``; an unknown price or an
+    empty ladder reports ``None`` instead of a guess.
+    """
+    if type(cost) is not int or cost < 0:
+        return None
+    known = sorted({value for value in costs if type(value) is int and value >= 0})
+    if not known or cost not in known:
+        return None
+    if len(known) == 1:
+        return "mid"
+    index = known.index(cost)
+    third = len(known) / 3
+    if index < third:
+        return "low"
+    if index < 2 * third:
+        return "mid"
+    return "high"
+
+
+def economy_band(sun: int | None, costs: Sequence[int]) -> str | None:
+    """Where the current balance sits on the prices already in hand.
+
+    ==============  ==========================================================
+    ``scarce``      below every price in hand (nothing in hand is payable yet)
+    ``normal``      at or above the lowest price, below the middle price
+    ``comfortable`` at or above the middle price, below the highest price
+    ``abundant``    at or above the highest price in hand
+    ==============  ==========================================================
+
+    Every boundary comes from the hand's own price ladder, so the band is a fact
+    about this sample and needs no configured sun threshold. ``None`` means the
+    balance or the price ladder is unknown; nothing is guessed for it.
+    """
+    if type(sun) is not int or sun < 0:
+        return None
+    known = sorted(cost for cost in costs if type(cost) is int and cost >= 0)
+    if not known:
+        return None
+    lowest, highest = known[0], known[-1]
+    middle = known[len(known) // 2]
+    if sun < lowest:
+        return "scarce"
+    if sun < middle:
+        return "normal"
+    if sun < highest:
+        return "comfortable"
+    return "abundant"
+
+
+def plan_facts(
+    cards: Any,
+    sun: int | None,
+    plan: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """The model's declared next construction as facts, or ``None`` without one.
+
+    The price is resolved from the card in hand carrying that type name on every
+    call, so a price change is reflected instead of remembered. A plan whose type
+    is not in hand keeps ``cost``/``payable``/``shortfall`` as ``None``: an
+    unreadable goal never becomes a premise, and the caller then narrows nothing.
+    """
+    if not isinstance(plan, Mapping):
+        return None
+    type_name = plan.get("type_name")
+    if not isinstance(type_name, str) or not type_name:
+        return None
+    cost = None
+    if isinstance(cards, (list, tuple)):
+        for card in cards:
+            if (
+                isinstance(card, Mapping)
+                and card.get("type_name") == type_name
+                and type(card.get("cost")) is int
+            ):
+                cost = card["cost"]
+                break
+    known_balance = type(sun) is int and sun >= 0
+    return {
+        "type_name": type_name,
+        "cost": cost,
+        "payable": None if cost is None or not known_balance else sun >= cost,
+        "shortfall": None if cost is None or not known_balance else max(0, cost - sun),
+    }
+
+
+def economy_facts(
+    jev_state: Mapping[str, Any],
+    plan: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The resource layer of one sample: band, declared plan, and its surplus.
+
+    No income rate, no future sun, and no prediction is computed. ``band`` labels
+    the current balance against this hand's prices, ``plan`` states the goal the
+    model declared, and ``sun_above_plan`` is the subtraction that is left once
+    that goal is paid for (``None`` while it is not payable). ``plan: null`` means
+    no goal is declared, which is a complete value, not missing data.
+    """
+    sun = _read_sun(jev_state.get("sun_balance")) if isinstance(jev_state, Mapping) else None
+    cards = jev_state.get("cards") if isinstance(jev_state, Mapping) else None
+    costs = card_costs(cards)
+    declared = plan_facts(cards, sun, plan)
+    above = None
+    if (
+        isinstance(declared, Mapping)
+        and declared["payable"] is True
+        and type(declared["cost"]) is int
+        and sun is not None
+    ):
+        above = sun - declared["cost"]
+    return {
+        "sun": sun,
+        "band": economy_band(sun, costs),
+        "cheapest_cost": costs[0] if costs else None,
+        "highest_cost": costs[-1] if costs else None,
+        "plan": declared,
+        "sun_above_plan": above,
+    }
+
+
+def lane_needs_response(rows: Sequence[RowSignals]) -> bool:
+    """True when at least one lane may not be left to a later decision.
+
+    A lane counts when its ordered urgency band is ``high`` or higher
+    (:data:`LANE_RESPONSE_URGENCIES`), or when it holds a zombie while nothing in
+    that lane can attack it -- the same fact the ``undefended`` presentation band
+    states. Only ordered bands and component facts are read, so no lane number,
+    layout, or quota enters here.
+    """
+    for row in rows:
+        if row.urgency in LANE_RESPONSE_URGENCIES:
+            return True
+        if (
+            type(row.zombie_count) is int
+            and row.zombie_count > 0
+            and row.attacker_count == 0
+        ):
+            return True
+    return False
+
+
+@dataclass(frozen=True)
+class PlantSpendDecision:
+    """Which card types the plant branch may offer, and why it holds instead.
+
+    ``hold_reason`` is set exactly when ``type_names`` is empty because the branch
+    is saving: the caller then records the wait instead of asking a question whose
+    every answer would spend the sun the declared plan still needs.
+    """
+
+    type_names: frozenset[str]
+    hold_reason: str | None
+
+
+def plant_spend_decision(
+    signals: StrategySignals,
+    cards: Any,
+    plan: Mapping[str, Any] | None = None,
+) -> PlantSpendDecision:
+    """Limit the offer to placements that do not compete with the declared plan.
+
+    The rules are code, and none of them is a configured sun threshold:
+
+    1. No plan: the full affordable set, exactly as OD-15 enumerates it.
+    2. Plan still needs sun and no lane needs a response: nothing is offered and
+       the branch waits (``await_plan``). Every cheaper placement on offer now is
+       exactly what would spend the plan's sun.
+    3. Plan still needs sun but a lane cannot be left alone: the full affordable
+       set, because an immediate answer outranks a long-term goal.
+    4. Plan is payable: the plan plus every card the balance *above* the plan's
+       own price can pay for. A small surplus therefore offers the plan alone,
+       while a large one frees the whole hand again -- the balance no longer
+       silently caps which plants the model may consider.
+
+    ``affordable`` is always intersected with the result, so a card that is on
+    cooldown or unusable is never offered back by its own plan.
+    """
+    affordable = signals.affordable
+    if not isinstance(plan, Mapping):
+        return PlantSpendDecision(affordable, None)
+    declared = plan_facts(cards, signals.sun, plan)
+    if declared is None or declared["cost"] is None or signals.sun is None:
+        return PlantSpendDecision(affordable, None)
+    cost = declared["cost"]
+    if signals.sun < cost:
+        if lane_needs_response(signals.rows):
+            return PlantSpendDecision(affordable, None)
+        return PlantSpendDecision(frozenset(), PLAN_HOLD_REASON)
+    surplus = signals.sun - cost
+    prices = {
+        card.get("type_name"): card.get("cost")
+        for card in (cards if isinstance(cards, (list, tuple)) else ())
+        if isinstance(card, Mapping)
+    }
+    allowed = {declared["type_name"]} | {
+        type_name
+        for type_name in affordable
+        if type(price := prices.get(type_name)) is int and price <= surplus
+    }
+    return PlantSpendDecision(frozenset(allowed) & affordable, None)
 
 
 def _read_zombie_rows(zombies: Any) -> tuple[dict[int, int], dict[int, int], dict[int, int | None]] | None:
@@ -580,30 +823,79 @@ def _read_wave(jev_state: Mapping[str, Any]) -> int | None:
 def build_plant_candidates(
     jev_state: Mapping[str, Any],
     signals: StrategySignals | None = None,
+    *,
+    plan: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Enumerate every validated ``{"type_name", "row", "col"}`` candidate.
 
-    The set is exactly ``affordable`` x ``empty_plantable_cells``: the cells are
-    projected empty-and-plantable positions and the types are payable, usable,
-    cooldown-ready cards, so no candidate needs further filtering. Per OD-15 the
-    enumeration is complete, with no local ranking, no cap, and no shortlist;
-    the order is the deterministic ``(type_name, row, col)`` enumeration order
-    (not a strategy) so tests and Trace stay stable. An empty list means the
-    caller must wait locally (``wait``/``await_resource``/``await_cooldown``).
+    Without a ``plan`` the set is exactly ``affordable`` x
+    ``empty_plantable_cells``: the cells are projected empty-and-plantable
+    positions and the types are payable, usable, cooldown-ready cards, so no
+    candidate needs further filtering. Per OD-15 the enumeration is complete,
+    with no local ranking, no cap, and no shortlist; the order is the
+    deterministic ``(type_name, row, col)`` enumeration order (not a strategy)
+    so tests and Trace stay stable.
+
+    A declared ``plan`` first limits the affordable set through
+    :func:`plant_spend_decision`, so the placements offered are the plan plus
+    whatever the balance above the plan's own price can pay for. An empty list
+    then means the caller must wait locally; the economy hold is
+    ``await_plan`` and the pre-existing reasons stay
+    (``wait``/``await_resource``/``await_cooldown``).
     """
     resolved = signals if signals is not None else evaluate_strategy(jev_state)
     cells = resolved.empty_plantable_cells
-    if not cells or not resolved.affordable:
+    allowed = plant_spend_decision(resolved, jev_state.get("cards"), plan).type_names
+    if not cells or not allowed:
         return []
     return [
         {"type_name": type_name, "row": row, "col": col}
-        for type_name in sorted(resolved.affordable)
+        for type_name in sorted(allowed)
         for row, col in sorted(cells)
     ]
 
 
-def management_facts(jev_state: Mapping[str, Any], all_state: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """Current observations and arithmetic, without desired counts or layouts."""
+def removable_cells(jev_state: Mapping[str, Any]) -> tuple[tuple[int, int, str], ...]:
+    """Every board cell the runtime can offer for removal, stably ordered.
+
+    A cell is removable exactly when its projected value is ``plant:<type_name>``
+    with a non-empty type name -- the same encoding
+    ``ActionBoundary._validate_shovel`` requires. Every other value (``None``,
+    ``False``, ``"unknown"``, a number) and a missing or malformed grid is
+    ignored instead of guessed. The result is ``(row, col, type_name)`` sorted by
+    row then column, so the same sample always enumerates identically.
+
+    The type name is not restricted to the catalog: a board cell carries no type
+    code, and a name the catalog cannot resolve is stated as facts with
+    ``role: null`` rather than dropped.
+    """
+    if not isinstance(jev_state, Mapping):
+        return ()
+    board = jev_state.get("board")
+    cells = board.get("cells") if isinstance(board, Mapping) else None
+    if not isinstance(cells, list) or not cells or not all(isinstance(row, list) for row in cells):
+        return ()
+    found: list[tuple[int, int, str]] = []
+    for row_index, row in enumerate(cells):
+        for column_index, cell in enumerate(row):
+            if not isinstance(cell, str) or not cell.startswith("plant:"):
+                continue
+            type_name = cell[len("plant:"):]
+            if type_name:
+                found.append((row_index, column_index, type_name))
+    return tuple(sorted(found))
+
+
+def management_facts(
+    jev_state: Mapping[str, Any],
+    all_state: Mapping[str, Any] | None = None,
+    plan: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Current observations and arithmetic, without desired counts or layouts.
+
+    ``plan`` only enriches the ``economy`` group with the goal the model already
+    declared; it is never invented here and never turns into a lineup.
+    """
     from configs.plant_catalog import production_currency
     sun = _read_sun(jev_state.get("sun_balance"))
     cards = []
@@ -635,7 +927,8 @@ def management_facts(jev_state: Mapping[str, Any], all_state: Mapping[str, Any] 
     matching = isinstance(all_state, Mapping) and jev_state.get("sample_sequence") is not None and jev_state.get("observed_at_utc") is not None and all_state.get("sample_sequence") == jev_state.get("sample_sequence") and all_state.get("observed_at_utc") == jev_state.get("observed_at_utc")
     waves = {key: game.get(key) if matching and isinstance(game, Mapping) and isinstance(source_game, Mapping) and game.get(key) == source_game.get(key) and availability.get(f"game.{key}") in {"available", "provisional"} and _is_number(game.get(key)) and game[key] >= 0 else None for key in ("wave", "total_waves")}
     observed_lanes = [{key: row.to_dict().get(key) for key in ("row", "zombie_count", "nearest_cells", "hp_total", "attacker_count", "has_defender")} for row in evaluate_strategy(jev_state).rows]
-    return {"sun": sun, "cards": cards, "plant_counts": counts if isinstance(plants, list) else None,
+    return {"sun": sun, "cards": cards, "economy": economy_facts(jev_state, plan),
+            "plant_counts": counts if isinstance(plants, list) else None,
             "lane_composition": _lane_composition(plants, rows_count),
             "board": board_facts,
             "plants": [{**{key: plant.get(key) for key in ("type_name", "row", "col", "hp")}, "role": _role_of(plant), "description_en": _description_of(plant)} for plant in plants if isinstance(plant, Mapping)] if isinstance(plants, list) else None,

@@ -47,6 +47,7 @@ from .questions import (
     PLANT_STATE_FIELDS,
     PLANT_TARGET_QUESTION_ID,
     ROW_COUNT,
+    SHOVEL_TARGET_QUESTION_ID,
     ChoiceLevel,
     DecisionQuestionSet,
     collect_now_question,
@@ -66,6 +67,9 @@ from .questions import (
     plant_target_options,
     plant_target_question,
     question_summary,
+    shovel_option_criteria,
+    shovel_option_id,
+    shovel_target_question,
 )
 from .strategy import (
     BRANCH_COLLECT,
@@ -73,6 +77,9 @@ from .strategy import (
     StrategySignals,
     build_plant_candidates,
     evaluate_strategy,
+    plant_role_by_name,
+    plant_spend_decision,
+    removable_cells,
 )
 
 
@@ -102,6 +109,7 @@ def build_typesafe_state(
     branch: str | None = None,
     signals: StrategySignals | None = None,
     all_state: Mapping[str, Any] | None = None,
+    plan: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build only the facts the requested branch's questions need (R20, V31).
 
@@ -110,6 +118,11 @@ def build_typesafe_state(
     pruned :data:`jev.questions.COLLECT_STATE_FIELDS`. Numbers, counts, and
     comparisons are computed by code (:mod:`jev.strategy`) and placed here as
     fact fields, so no question has to ask the model to arithmetic.
+
+    ``plan`` is the construction goal the model itself already declared, passed so
+    the ``economy`` group can state that goal's price and its surplus. It is
+    context only: the hand is never filtered by it here, and a missing plan is a
+    complete value rather than missing data.
 
     Called without a branch the function returns the shared observed-ability
     context only; :func:`jev.trace.build_trace_event` reads exactly that key.
@@ -124,7 +137,7 @@ def build_typesafe_state(
     if branch is None:
         return {"catalog_context": catalog_context}
     from .strategy import management_facts, threat_label_facts
-    state = threat_label_facts(management_facts(jev_state, all_state))
+    state = threat_label_facts(management_facts(jev_state, all_state, plan))
     state["catalog_context"] = catalog_context
     if branch == BRANCH_COLLECT:
         counts = {}
@@ -423,6 +436,7 @@ def build_plant_questions(
     jev_state: Mapping[str, Any],
     *,
     signals: StrategySignals | None = None,
+    plan: Mapping[str, Any] | None = None,
 ) -> DecisionQuestionSet:
     """Build the whole plant decision as one speculative fan-out question set.
 
@@ -432,21 +446,84 @@ def build_plant_questions(
     absolute plant gate (OD-41, R31). One plant decision costs exactly one
     ``system_one`` call.
 
+    When the board reports removable cells (:func:`jev.strategy.removable_cells`),
+    one more Choice is appended to the same request: the shovel layer, which asks
+    which occupied cell to clear plus its own discard option (CD-08). The matrix
+    the model sees is therefore up to two layers, and :mod:`jev.decision` keeps one
+    action per decision with the removal winning over a placement.
+
+    A request is sent when there is a placement candidate *or* a removable cell
+    (CD-09), so a board with no plantable cell can still be acted on and then
+    carries the shovel layer alone. Neither means the caller must wait locally and
+    send nothing.
+
+    ``plan`` is the construction goal the model declared earlier. It is context,
+    not an authorization premise (OD-43/R29): it limits the offered set only
+    through :func:`jev.strategy.plant_spend_decision` -- the plan plus what the
+    balance above its own price can pay for -- and it never removes the rest of
+    the hand by itself.
+
     When ``candidates + discard`` would exceed the official
     :data:`jev.questions.MAX_CHOICE_OPTIONS` cap, the placement Choice is chained
     into a lane Choice plus one speculative Choice per lane (each inside the cap)
-    instead of being sorted, shortlisted, or truncated. An empty ``questions``
-    mapping means the caller must wait locally and send nothing.
+    instead of being sorted, shortlisted, or truncated; the shovel layer is
+    appended after that chain unchanged. An empty ``questions`` mapping means the
+    caller must wait locally and send nothing.
     """
     resolved = signals if signals is not None else evaluate_strategy(jev_state)
-    candidates = tuple(build_plant_candidates(jev_state, resolved))
-    if not candidates:
+    candidates = tuple(build_plant_candidates(jev_state, resolved, plan=plan))
+    removable = removable_cells(jev_state)
+    if not candidates and not removable:
         return DecisionQuestionSet("plant", {}, (), (), False, {})
-    if len(resolved.rows) != ROW_COUNT:
-        raise JevDecisionError("The plant request needs the five projected lanes.")
-    if plant_target_options(len(candidates)):
-        return _split_plant_question_set(jev_state, candidates)
-    return _single_plant_question_set(jev_state, candidates)
+    if candidates:
+        if len(resolved.rows) != ROW_COUNT:
+            raise JevDecisionError("The plant request needs the five projected lanes.")
+        question_set = (
+            _split_plant_question_set(jev_state, candidates)
+            if plant_target_options(len(candidates))
+            else _single_plant_question_set(jev_state, candidates)
+        )
+    else:
+        question_set = DecisionQuestionSet("plant", {}, (), (), False, {})
+    if not removable:
+        return question_set
+    return _with_shovel_layer(question_set, removable)
+
+
+def _with_shovel_layer(
+    question_set: DecisionQuestionSet,
+    removable: tuple[tuple[int, int, str], ...],
+) -> DecisionQuestionSet:
+    """Append the shovel Choice after the placement layer, as one more level.
+
+    Every removable cell becomes one option (facts only: cell, plant type, catalog
+    role) next to the layer's own discard option; no Noul is added anywhere. The
+    level number follows the placement layer, so a single placement Choice and a
+    lane chain both keep their own numbering.
+    """
+    level = max((choice.level for choice in question_set.choice_levels), default=0) + 1
+    criteria: dict[str, Any] = {}
+    targets: dict[str, Mapping[str, Any]] = {}
+    for row, col, type_name in removable:
+        option_id = shovel_option_id(row, col)
+        criteria[option_id] = shovel_option_criteria(
+            type_name=type_name, row=row, col=col, role=plant_role_by_name(type_name)
+        )
+        targets[option_id] = {"action": "shovel_cell", "row": row, "col": col}
+    criteria[DISCARD_OPTION_ID] = discard_option_criteria("No removal")
+    targets[DISCARD_OPTION_ID] = {}
+    questions = {
+        **question_set.questions,
+        SHOVEL_TARGET_QUESTION_ID: shovel_target_question(criteria),
+    }
+    return DecisionQuestionSet(
+        "plant",
+        questions,
+        question_set.candidates,
+        (*question_set.choice_levels, ChoiceLevel(SHOVEL_TARGET_QUESTION_ID, level, targets)),
+        question_set.split,
+        question_summary(questions),
+    )
 
 
 def _same_sample_item_id(
@@ -813,23 +890,34 @@ class AsyncJevClient:
         """Answer the whole plant decision with one speculative fan-out request.
 
         Every question of this decision (the placement Choice, or the lane chain
-        when the candidates exceed the option cap) travels in the same request,
-        so one decision costs exactly one ``system_one`` call (V29); an empty
-        placement list costs none and waits locally (V32). There is no absolute
-        plant gate: the placement Choice is taken as the model's argmax with no
-        threshold at all, and the model's own discard option is the only thing
-        that makes the branch wait (OD-41, R31, V57).
+        when the candidates exceed the option cap, plus the shovel layer when the
+        board reports removable cells) travels in the same request, so one decision
+        costs exactly one ``system_one`` call (V29); a board with neither a
+        placement candidate nor a removable cell costs none and waits locally
+        (V32). There is no absolute plant gate: each Choice layer is taken as the
+        model's argmax with no threshold at all, and its own discard option is the
+        only thing that makes that layer abstain (OD-41, R31, V57). One decision
+        still yields at most one action: :func:`jev.decision.combine_plant_decision`
+        lets a selected removal win over a selected placement.
+
+        ``intent`` is the construction goal the model declared earlier. It is
+        context, not an authorization premise (OD-43/R29): it limits the offer
+        through :func:`jev.strategy.plant_spend_decision` and is stated in the
+        request state, but it never removes the rest of the hand by itself. (It
+        used to filter the cards down to one type here, which collapsed a
+        ten-type hand to a single type for as long as the model answered
+        ``keep``.)
         """
-        if intent is not None and intent.get("type_name"):
-            jev_state = {**jev_state, "cards": [card for card in jev_state.get("cards") or [] if card.get("type_name") == intent["type_name"]]}
-            signals = evaluate_strategy(jev_state)
         question_set = build_plant_questions(
             jev_state,
             signals=signals,
+            plan=intent,
         )
         if not question_set.questions:
-            return _local_action_wait("plant", "no_valid_action_targets")
-        request_state = build_typesafe_state(jev_state, branch=BRANCH_PLANT, signals=signals, all_state=all_state)
+            resolved = signals if signals is not None else evaluate_strategy(jev_state)
+            hold = plant_spend_decision(resolved, jev_state.get("cards"), intent).hold_reason
+            return _local_action_wait("plant", hold or "no_valid_action_targets")
+        request_state = build_typesafe_state(jev_state, branch=BRANCH_PLANT, signals=signals, all_state=all_state, plan=intent)
         request_state.update(current_intent=intent, last_actual_result=last_result)
         response, latency_ms = await self.system_one(
             state=request_state,
@@ -849,11 +937,11 @@ class AsyncJevClient:
         from .questions import management_questions, MANAGEMENT_INTENT_QUESTION_ID, MANAGEMENT_TYPE_QUESTION_ID
         from .decision import _choice_probabilities
         question_set = build_collect_questions(jev_state, all_state=all_state)
-        state = build_typesafe_state(jev_state, branch=BRANCH_COLLECT, all_state=all_state)
+        state = build_typesafe_state(jev_state, branch=BRANCH_COLLECT, all_state=all_state, plan=intent)
         state["current_intent"] = intent
         state["last_actual_result"] = last_result
         types = tuple(card["type_name"] for card in state["cards"])
-        questions = {**question_set.questions, **management_questions(tuple(state["cards"] or ()))}
+        questions = {**question_set.questions, **management_questions(tuple(state["cards"] or ()), economy=state.get("economy"))}
         response, latency = await self.system_one(state=state, questions=questions)
         errors = []
         if question_set.questions:

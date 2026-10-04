@@ -361,7 +361,7 @@ asserts the two stay equal so a rename cannot split the vocabulary silently.
 """
 
 RELIABLE_OUTCOMES: frozenset[str] = frozenset(
-    {"selected", "model_wait", "low_confidence", "no_target", "await_resource", "await_cooldown"}
+    {"selected", "model_wait", "low_confidence", "no_target", "await_resource", "await_cooldown", "await_plan"}
 )
 """Conclusions the Runtime records as the branch's answer for that key (OD-22).
 
@@ -754,6 +754,15 @@ MERGE_REVIEW_KEYS: tuple[str, ...] = (
     "best_probability",
     "discard_probability",
     "margin",
+    "shovel_option",
+    "shovel_selected",
+    "shovel_discarded",
+    "shovel_overrode_placement",
+    "overridden_placement_option",
+    "shovel_best_option",
+    "shovel_best_probability",
+    "shovel_discard_probability",
+    "shovel_margin",
     "confidence",
     "status",
     "fallback_reason",
@@ -763,6 +772,10 @@ MERGE_REVIEW_KEYS: tuple[str, ...] = (
 They are always present in a schema-2 ``merge`` record -- with ``null`` when the
 code-side merge did not set them, as it does not for a target that was never
 re-ranked -- so a reviewer can tell "nothing was rejected" from "not recorded".
+The ``shovel_*`` keys are the removal layer of the same decision (CD-08):
+``shovel_selected``/``shovel_discarded`` say whether a removal won or was
+declined, and ``shovel_overrode_placement`` plus ``overridden_placement_option``
+name a placement that was dropped for it instead of losing it silently.
 """
 
 
@@ -968,6 +981,29 @@ def _intent_record(value):
     return _select_scalars(value, ("type_name",))
 
 
+def _economy_record(value):
+    """The resource group of one request state, bounded to its declared keys.
+
+    Every value is already a scalar, list or ``None`` by construction
+    (:func:`jev.strategy.economy_facts`), so this projection is the identity for a
+    real builder output and a bounded empty record for anything else. An
+    undeclared key can therefore never reach the Trace through this field.
+    """
+    if not isinstance(value, Mapping):
+        return None
+    plan = value.get("plan")
+    return {
+        "sun": _safe_int(value.get("sun")),
+        "band": _safe_text(value.get("band")),
+        "cheapest_cost": _safe_int(value.get("cheapest_cost")),
+        "highest_cost": _safe_int(value.get("highest_cost")),
+        "sun_above_plan": _safe_int(value.get("sun_above_plan")),
+        "plan": _select_scalars(plan, ("type_name", "cost", "payable", "shortfall"))
+        if isinstance(plan, Mapping)
+        else None,
+    }
+
+
 def _actual_request_state(decision, jev_state, branch, issued):
     actual = getattr(decision, "request_state", None)
     if not isinstance(actual, Mapping): actual = _model_input_state(jev_state, branch, issued)
@@ -989,6 +1025,7 @@ def _actual_request_state(decision, jev_state, branch, issued):
     from configs.plant_catalog import PLANTS
     names = {plant.name for plant in PLANTS}
     result["plant_counts"] = {key: _safe_int(value) for key, value in counts.items() if key in names} if isinstance(counts, Mapping) else None
+    result["economy"] = _economy_record(actual.get("economy"))
     board = actual.get("board")
     cells = board.get("cells") if isinstance(board, Mapping) else None
     direction = board.get("column_direction") if isinstance(board, Mapping) else None

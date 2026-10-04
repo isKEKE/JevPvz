@@ -171,7 +171,7 @@ layer has one job:
   taken by argmax with no local lane reranking. The declared construction goal is
   context, not an authorization premise: it never filters the hand down to one
   type, and it limits the offered placements only through `economy` -- while the
-  goal still needs sun and no lane is at `medium` urgency or higher (or holds a
+  goal still needs sun and no lane is at `high` urgency or higher (or holds a
   zombie with nothing able to attack it), the branch waits locally with
   `await_plan`; once the goal is payable it offers that goal's placements plus
   every card the balance above the goal's own price can pay for. `economy` states
@@ -181,9 +181,24 @@ layer has one job:
   zombie transient is excluded from the PlantBranch change key (a missing or
   malformed wave stays conservative), while the zombie facts still reach the
   model.
+  The same request may also remove one plant: when the board reports cells encoded
+  as `plant:<type_name>`, one more Choice layer asks which occupied cell to clear
+  (its own discard option, facts only: cell row/column, the reported type name and
+  that type's catalog role). The model can therefore remove a plant in the same
+  request it considers placements in; code keeps one action per decision, so a
+  selected removal wins over a selected placement and the dropped placement is
+  recorded in the merge instead of being lost silently. A request is sent when
+  there is a placement candidate *or* a removable cell, so an occupied board with
+  no plantable cell is still asked (and then carries the removal layer alone);
+  `await_plan` keeps its priority and sends nothing then.
 - **Scheduling**: the existing two workers share one non-preemptible executor.
   Urgency is mechanical: plant proposals are low priority and ready actions run
   FIFO otherwise.
+  A removal shares the plant branch and the very same proposal queue entry as a
+  placement -- proposals are banded once per branch, so urgency, TTL, epoch and
+  intent-version guards apply identically -- and only the target's `action`
+  differs; `_review_shovel` re-checks the cell's `plant:<type_name>` encoding and
+  the matching All State entity before anything is clicked.
   Source domain, intent content version, target, current actual resources,
   identity, stop and TTL are checked before dispatch. Invalid/stale proposals
   are rejected without substituting another model target. Intent is context,
@@ -214,7 +229,10 @@ wait/discard reason, and the actual shared request input. Collection records its
 single Noul and authorized count; management records keep/replace/cancel and
 construction type. Plant records the offered
 placement distribution, the selected option without reranking, and its
-``best_option``/``best_probability``/``discard_probability``/``margin`` facts.
+``best_option``/``best_probability``/``discard_probability``/``margin`` facts. A
+plant request that also offered removals records that layer's own
+``shovel_selected``/``shovel_discarded`` and, when a placement was dropped for it,
+``shovel_overrode_placement`` with ``overridden_placement_option``.
 Model intent content versions and source job links connect these decisions to
 actual executions. The per-lane/economy Noul gates and the collected
 ``needed_rows``/reranking fields are historical records: they are no longer part

@@ -10,7 +10,14 @@ from configs.plant_catalog import plant_info
 from jev.client import build_typesafe_state
 from jev.decision import JevActionDecision, JevRouterDecision
 from jev.loop import JevRuntimeCycle
-from jev.questions import COLLECT_STATE_FIELDS, PLANT_STATE_FIELDS
+from jev.questions import (
+    COLLECT_STATE_FIELDS,
+    DISCARD_OPTION_ID,
+    PLANT_STATE_FIELDS,
+    PLANT_TARGET_QUESTION_ID,
+    SHOVEL_TARGET_QUESTION_ID,
+    shovel_option_id,
+)
 from jev.strategy import BRANCH_PLANT, evaluate_strategy
 from jev.trace import (
     DISCARDED_OUTCOME,
@@ -565,12 +572,43 @@ class RuntimeTraceV2Tests(unittest.TestCase):
             self.assertIn("role", card)
         for banned in ("recommend", "quota", "ideal", "priority", "advice"):
             self.assertNotIn(banned, json.dumps(plant["state"]))
+        # The resource group is a computed fact group, never a recommendation.
+        self.assertIn("band", plant["state"]["economy"])
 
     def test_a_job_that_sent_no_request_records_no_model_input(self):
         events = self.emit(runtime_branch_cycle_without_answer(outcome="await_resource", cycle=2))
         start = [event for event in events if event["event"] == EVENT_JOB_START][0]
         self.assertEqual(start["request_issued"], False)
         self.assertIsNone(start["state"])
+
+    def test_await_plan_is_a_reliable_local_conclusion(self):
+        """Case A: saving is a recorded conclusion of the key, not a lost cycle."""
+        events = self.emit(runtime_branch_cycle_without_answer(outcome="await_plan", cycle=2, branch="plant"))
+        start = [event for event in events if event["event"] == EVENT_JOB_START][0]
+        end = [event for event in events if event["event"] == EVENT_JOB_END][0]
+        self.assertEqual(start["request_issued"], False)
+        self.assertIsNone(start["state"])
+        self.assertEqual(end["outcome"], "await_plan")
+        self.assertTrue(end["reliable"])
+
+    def test_a_declared_goal_round_trips_through_the_request_state_whitelist(self):
+        from types import SimpleNamespace
+        from jev.trace import _actual_request_state
+        state = runtime_jev_state()
+        actual = build_typesafe_state(state, branch=BRANCH_PLANT, plan={"type_name": "peashooter"})
+        recorded = _actual_request_state(SimpleNamespace(request_state=actual), state, BRANCH_PLANT, True)
+        self.assertEqual(recorded, actual)
+        self.assertEqual(
+            recorded["economy"],
+            {
+                "sun": 75,
+                "band": "normal",
+                "cheapest_cost": 50,
+                "highest_cost": 100,
+                "sun_above_plan": None,
+                "plan": {"type_name": "peashooter", "cost": 100, "payable": False, "shortfall": 25},
+            },
+        )
 
     def test_the_recorded_request_state_carries_no_identity_and_no_raw_state(self):
         events = self.emit(runtime_collect_cycle())
@@ -818,6 +856,118 @@ class RuntimeTraceV2Tests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def shovel_jev_state() -> dict:
+    """One plant sample with a removable occupied cell and a usable hand."""
+    state = runtime_jev_state()
+    cells = [[None] * 9 for _ in range(5)]
+    cells[2][3] = "plant:peashooter"
+    state["board"]["cells"] = cells
+    state["plants"] = [{"type_code": 0, "type_name": "peashooter", "row": 2, "col": 3}]
+    return state
+
+
+def shovel_decision() -> tuple[JevActionDecision, str]:
+    """The real plant merge of one request that selects a placement and a removal."""
+    from types import SimpleNamespace
+    from jev.client import build_plant_questions
+    from jev.decision import combine_plant_decision
+
+    question_set = build_plant_questions(shovel_jev_state())
+    placement = next(
+        key for key in question_set.questions[PLANT_TARGET_QUESTION_ID].criteria
+        if key != DISCARD_OPTION_ID
+    )
+    answers = {}
+    for question_id, question in question_set.questions.items():
+        chosen = shovel_option_id(2, 3) if question_id == SHOVEL_TARGET_QUESTION_ID else placement
+        remaining = (1.0 - 0.9) / max(1, len(question.criteria) - 1)
+        probabilities = {key: remaining for key in question.criteria}
+        probabilities[chosen] = 0.9
+        answers[question_id] = SimpleNamespace(
+            type="choice", choice=chosen, confidence=0.9, probabilities=probabilities
+        )
+    decision = combine_plant_decision(
+        SimpleNamespace(model="jev-latest", usage=None, answers=answers),
+        question_set=question_set,
+        latency_ms=210,
+        question_summary=question_set.summary,
+    )
+    return decision, placement
+
+
+class ShovelLayerTraceTests(unittest.TestCase):
+    """V19/R15: the removal layer and its execution are recorded as facts."""
+
+    def events(self) -> tuple[list[dict], dict]:
+        decision, placement = shovel_decision()
+        self.assertEqual(decision.target["action"], "shovel_cell")
+        self.assertEqual(decision.effective_action, "shovel")
+        self.assertEqual(decision.answers["merge"]["overridden_placement_option"], placement)
+        builder = RuntimeEventBuilder(run_id="run-shovel")
+        events = builder.events_for(
+            JevRuntimeCycle(
+                cycle=1,
+                sample_sequence=RUNTIME_SEQUENCE,
+                started_at_utc=_utc(0),
+                finished_at_utc=_utc(500),
+                outcome="selected",
+                effective_action="shovel",
+                all_state=dict(_SENTINEL_ALL_STATE),
+                jev_state=shovel_jev_state(),
+                action=decision,
+                boundary_result=None,
+                branch="plant",
+            )
+        )
+        events += builder.events_for(
+            JevRuntimeCycle(
+                cycle=2,
+                sample_sequence=RUNTIME_SEQUENCE,
+                started_at_utc=_utc(600),
+                finished_at_utc=_utc(700),
+                outcome="executed",
+                effective_action="shovel",
+                all_state=dict(_SENTINEL_ALL_STATE),
+                jev_state=shovel_jev_state(),
+                action=None,
+                boundary_result={"status": "success", "action": "shovel_cell", "elapsed_ms": 120},
+                branch="plant",
+                executed_target={"action": "shovel_cell", "row": 2, "col": 3},
+            )
+        )
+        return events, placement
+
+    def test_the_removal_layer_answers_and_execution_are_recorded(self):
+        events, placement = self.events()
+        start = next(event for event in events if event["event"] == EVENT_JOB_START)
+        result = next(event for event in events if event["event"] == EVENT_REQUEST_RESULT)
+        action = next(event for event in events if event["event"] == EVENT_ACTION_RESULT)
+
+        # job_start.state carries the very facts the removal options state.
+        self.assertEqual(start["state"]["board"]["cells"][2][3], "plant:peashooter")
+        self.assertEqual([plant["type_name"] for plant in start["state"]["plants"]], ["peashooter"])
+        self.assertEqual(start["request_issued"], True)
+
+        shovel_answer = result["typed_answers"]["shovel_target"]
+        self.assertEqual(shovel_answer["choice"], shovel_option_id(2, 3))
+        self.assertEqual(sorted(shovel_answer["probabilities"]), ["none_of_the_above", shovel_option_id(2, 3)])
+        self.assertIs(result["merge"]["shovel_selected"], True)
+        self.assertIs(result["merge"]["shovel_discarded"], False)
+        self.assertIs(result["merge"]["shovel_overrode_placement"], True)
+        self.assertEqual(result["merge"]["overridden_placement_option"], placement)
+        self.assertEqual(result["target"]["action"], "shovel_cell")
+        self.assertEqual(result["effective_action"], "shovel")
+
+        self.assertEqual(action["target"]["action"], "shovel_cell")
+        self.assertEqual((action["target"]["row"], action["target"]["col"]), (2, 3))
+        self.assertEqual(action["boundary"]["action"], "shovel_cell")
+        self.assertEqual(action["boundary"]["status"], "success")
+
+        blob = json.dumps(events, ensure_ascii=False)
+        for banned in ("item_id", "plant_id", "raw_snapshot", "api_key", "123456"):
+            self.assertNotIn(banned, blob)
 
 
 class SharedNestedWhitelistTests(unittest.TestCase):

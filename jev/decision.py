@@ -30,6 +30,9 @@ from .questions import (
     COLLECT_ACT_THRESHOLD,
     COLLECT_NOW_QUESTION_ID,
     DISCARD_OPTION_ID,
+    PLANT_LANE_QUESTION_ID,
+    PLANT_TARGET_QUESTION_ID,
+    SHOVEL_TARGET_QUESTION_ID,
     DecisionQuestionSet,
     plant_lane_target_question_id,
 )
@@ -39,6 +42,12 @@ ROUTER_CHOICES = frozenset({"wait", "collect", "plant", "shovel"})
 ACTION_CONFIDENCE_THRESHOLD = DEFAULT_ACTION_CONFIDENCE_THRESHOLD
 ROUTER_CONFIDENCE_THRESHOLD = DEFAULT_ROUTER_CONFIDENCE_THRESHOLD
 NOUL_CANDIDATE_THRESHOLD = DEFAULT_NOUL_CANDIDATE_THRESHOLD
+
+_EFFECTIVE_ACTION_BY_TARGET: dict[str, str] = {"place_plant": "plant", "shovel_cell": "shovel"}
+"""The plant branch's target action -> effective action; anything else waits."""
+
+_PLANT_LEVEL_QUESTION_IDS: tuple[str, ...] = (PLANT_TARGET_QUESTION_ID, PLANT_LANE_QUESTION_ID)
+"""The question ids that make up the placement layer, never the shovel layer."""
 
 
 class JevDecisionError(ValueError):
@@ -245,6 +254,16 @@ def combine_plant_decision(
        is strict: a placement is taken only when its ``best`` probability is
        *greater* than the discard option's, so a flat tie (``margin == 0``) waits
        instead of dispatching (R31, OD-41).
+    3. One action per decision (CD-08): the request carries at most one shovel
+       layer next to the placement layer, and when both layers resolve to a target
+       the removal wins -- the placement is dropped, and ``merge`` records
+       ``shovel_overrode_placement`` plus the dropped option id instead of losing
+       it silently. The shovel layer obeys the very same strict rule as the
+       placement layer: its own argmax must not be its discard option and must be
+       *strictly* above that discard option's probability (δ=0). The intent stays
+       ``plant`` (the proposal and its branch do not change, and the scheduler
+       re-reviews the target's action); only ``effective_action`` reads
+       ``shovel``.
     """
     if question_set.intent != "plant":
         raise JevDecisionError("combine_plant_decision requires a plant question set.")
@@ -266,6 +285,15 @@ def combine_plant_decision(
         "best_probability": None,
         "discard_probability": None,
         "margin": None,
+        "shovel_option": None,
+        "shovel_selected": False,
+        "shovel_discarded": None,
+        "shovel_overrode_placement": False,
+        "overridden_placement_option": None,
+        "shovel_best_option": None,
+        "shovel_best_probability": None,
+        "shovel_discard_probability": None,
+        "shovel_margin": None,
     }
     records["merge"] = merge
 
@@ -274,9 +302,10 @@ def combine_plant_decision(
     ) -> JevActionDecision:
         merge["status"] = status
         merge["fallback_reason"] = fallback_reason
+        action = None if target is None else target.get("action")
         return JevActionDecision(
             intent="plant",
-            effective_action="plant" if target is not None else "wait",
+            effective_action=_EFFECTIVE_ACTION_BY_TARGET.get(action, "wait"),
             target=target,
             answers=records,
             fallback_reason=fallback_reason,
@@ -288,6 +317,8 @@ def combine_plant_decision(
         )
 
     chosen_option, confidence, deciding = _chosen_plant_option(question_set, choice_records)
+    best_probability: float | None = None
+    discard_probability: float | None = None
     if deciding is not None:
         option_probabilities = deciding["probabilities"]
         best_option = max(option_probabilities, key=option_probabilities.get)
@@ -299,19 +330,77 @@ def combine_plant_decision(
         merge["margin"] = best_probability - discard_probability
     merge["chosen_option"] = chosen_option
     merge["confidence"] = confidence
-    if chosen_option is None:
-        return _decision("model_wait", "no_placement_option_was_selected", None)
-    if chosen_option == DISCARD_OPTION_ID:
-        return _decision("model_wait", "model_selected_the_discard_option", None)
-    if best_probability is not None and discard_probability is not None and best_probability <= discard_probability + 1e-9:
-        return _decision("model_wait", "discard_option_tied_or_won", None)
 
-    selected = candidates_by_option.get(chosen_option)
-    if selected is None:
-        return _decision("model_wait", "selected_option_has_no_placement", None)
-    merge["selected_option"] = chosen_option
-    merge["best_available_probability"] = probabilities.get(chosen_option)
-    return _decision("selected", None, _plant_target(selected))
+    placement: Mapping[str, Any] | None = None
+    placement_reason = "no_placement_option_was_selected"
+    if chosen_option is None:
+        placement_reason = "no_placement_option_was_selected"
+    elif chosen_option == DISCARD_OPTION_ID:
+        placement_reason = "model_selected_the_discard_option"
+    elif (
+        best_probability is not None
+        and discard_probability is not None
+        and best_probability <= discard_probability + 1e-9
+    ):
+        placement_reason = "discard_option_tied_or_won"
+    else:
+        placement = candidates_by_option.get(chosen_option)
+        if placement is None:
+            placement_reason = "selected_option_has_no_placement"
+
+    shovel_option, shovel_target = _shovel_selection(choice_records, candidates_by_option, merge)
+    if shovel_target is not None:
+        merge["selected_option"] = shovel_option
+        merge["best_available_probability"] = probabilities.get(shovel_option)
+        if placement is not None:
+            merge["shovel_overrode_placement"] = True
+            merge["overridden_placement_option"] = chosen_option
+        return _decision("selected", None, dict(shovel_target))
+    if placement is not None:
+        merge["selected_option"] = chosen_option
+        merge["best_available_probability"] = probabilities.get(chosen_option)
+        return _decision("selected", None, _plant_target(placement))
+    return _decision("model_wait", placement_reason, None)
+
+
+def _shovel_selection(
+    choice_records: Mapping[str, Mapping[str, Any]],
+    candidates_by_option: Mapping[str, Mapping[str, Any]],
+    merge: dict[str, Any],
+) -> tuple[str | None, Mapping[str, Any] | None]:
+    """Resolve the optional shovel layer into one removal target, or nothing.
+
+    The layer is judged by the placement layer's own strict rule (OD-41, δ=0): its
+    argmax must not be the layer's discard option and must be *strictly* above that
+    discard option's probability, so a flat tie waits instead of clearing a cell.
+    ``merge`` receives the layer's own best/discard facts plus
+    ``shovel_selected``/``shovel_discarded``, so a reviewer can tell "no removal
+    layer was asked" (``None``) from "the removal layer was discarded".
+    """
+    record = choice_records.get(SHOVEL_TARGET_QUESTION_ID)
+    if record is None:
+        return None, None
+    option_probabilities = record["probabilities"]
+    choice = str(record["choice"])
+    best_option = max(option_probabilities, key=option_probabilities.get)
+    best_probability = option_probabilities[best_option]
+    discard_probability = option_probabilities.get(DISCARD_OPTION_ID, 0.0)
+    merge["shovel_option"] = choice
+    merge["shovel_best_option"] = best_option
+    merge["shovel_best_probability"] = best_probability
+    merge["shovel_discard_probability"] = discard_probability
+    merge["shovel_margin"] = best_probability - discard_probability
+    target = None if choice == DISCARD_OPTION_ID else candidates_by_option.get(choice)
+    if (
+        target is None
+        or target.get("action") != "shovel_cell"
+        or best_probability <= discard_probability + 1e-9
+    ):
+        merge["shovel_discarded"] = True
+        return None, None
+    merge["shovel_selected"] = True
+    merge["shovel_discarded"] = False
+    return choice, target
 
 
 def combine_collect_decision(
@@ -356,8 +445,8 @@ def _read_choice_levels(
     """Validate every offered Choice answer and flatten it for the merge.
 
     Returns the trace records per question, the option probabilities keyed by
-    option id, and the placement/item each option binds to. The discard option
-    binds to nothing.
+    option id, and the target each option binds to. The discard option binds to
+    nothing, and so does a lane option (which names no plant type and no action).
     """
     records: dict[str, dict[str, Any]] = {}
     probabilities: dict[str, float] = {}
@@ -384,10 +473,10 @@ def _read_choice_levels(
         for option_id, probability in option_probabilities.items():
             probabilities[option_id] = probability
             target = level.targets[option_id]
-            # Only complete type/row/column placements or item identities are
-            # bindable targets; the discard option and a lane option (which does
-            # not name a plant type) are not.
-            if target and "type_name" in target:
+            # Only a complete type/row/column placement or a removal cell is a
+            # bindable target; the discard option and a lane option (which names no
+            # plant type) are not.
+            if target and ("type_name" in target or target.get("action") == "shovel_cell"):
                 candidates[option_id] = target
     return records, probabilities, candidates
 
@@ -397,11 +486,22 @@ def _chosen_plant_option(
 ) -> tuple[str | None, float, Mapping[str, Any] | None]:
     """Resolve the selected placement option and the level record it came from.
 
-    The returned record's ``probabilities`` are the deciding level's own
-    distribution, so its ``best``/``discard`` facts can be reviewed without
-    mixing in the other level of a split chain.
+    The placement layer is found by its own question ids, never by position: a
+    request whose placement layer is empty asks the shovel layer alone, and that
+    layer must not be read as a placement. The returned record's ``probabilities``
+    are the deciding level's own distribution, so its ``best``/``discard`` facts can
+    be reviewed without mixing in the other level of a split chain.
     """
-    first = question_set.choice_levels[0]
+    first = next(
+        (
+            level
+            for level in question_set.choice_levels
+            if level.question_id in _PLANT_LEVEL_QUESTION_IDS
+        ),
+        None,
+    )
+    if first is None:
+        return None, 0.0, None
     record = choice_records.get(first.question_id)
     if record is None:
         return None, 0.0, None

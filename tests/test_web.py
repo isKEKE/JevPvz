@@ -1199,6 +1199,57 @@ console.log(JSON.stringify({list: vm.threats.list, focus: vm.currentTarget}));
         for absent in ("threat", "eta", "speed", "reason", "grade"):
             self.assertNotIn(f'"{absent}"', blob)
 
+    def test_a_confirmed_removal_lights_its_own_cell_and_never_reads_as_planting(self):
+        """V20/R16: the lawn cell lights only for a same-job successful shovel_cell."""
+        with urlopen(f"http://127.0.0.1:{self.port}/api/catalog") as response:
+            catalog = json.loads(response.read())
+        payload = {
+            "status": "ok", "schema_version": 2, "run_id": "run-shovel",
+            "questions": [
+                {"question_id": "shovel_target", "branch_id": "plant", "job_id": "job-000004",
+                 "choice": "remove@r2c3", "options": [
+                     {"option_id": "remove@r2c3", "probability": 0.7, "executed": False},
+                     {"option_id": "none_of_the_above", "probability": 0.3, "executed": False}]},
+            ],
+            "decision": {"job_id": "job-000004", "stage_id": "plant-decision", "status": "selected",
+                         "intent": "plant", "effective_action": "shovel",
+                         "target": {"action": "shovel_cell", "row": 2, "col": 3},
+                         "target_choice_rule": "argmax", "fallback_reason": None, "latency_ms": 210},
+            "execution": {"job_id": "job-000004", "boundary_status": "success", "outcome": "executed",
+                          "target": {"action": "shovel_cell", "row": 2, "col": 3},
+                          "execution_elapsed_ms": 318},
+        }
+        probe = viewmodel_probe(
+            "const base = " + json.dumps(payload, ensure_ascii=False) + ";\n"
+            "const variant = (mutate) => {const copy = JSON.parse(JSON.stringify(base)); mutate(copy); return copy;};\n"
+            "const cells = (options) => JEVViewModel.buildRuntimeViewModel({options}).decision.field.cells;\n"
+            "const selected = (options) => JEVViewModel.buildRuntimeViewModel({options}).decision.selected;\n"
+            "console.log(JSON.stringify({\n"
+            "  lit: cells(base),\n"
+            "  authoritative: JEVViewModel.buildRuntimeViewModel({options: base}).decision.field.authoritative,\n"
+            "  unverified: cells(variant((copy) => {copy.execution.boundary_status = 'unverified';})),\n"
+            "  otherJob: cells(variant((copy) => {copy.execution.job_id = 'job-000009';})),\n"
+            "  planted: cells(variant((copy) => {copy.execution.target.action = 'place_plant';})),\n"
+            "  selected: selected(base),\n"
+            "}));",
+            catalog,
+        )
+        self.assertEqual(probe["authoritative"], "shovel_target")
+        self.assertEqual(len(probe["lit"]), 1)
+        lit = probe["lit"][0]
+        self.assertEqual((lit["row"], lit["col"]), (2, 3))
+        self.assertEqual(lit["optionId"], "remove@r2c3")
+        self.assertEqual(lit["typeLabel"], "铲除")
+        self.assertIs(lit["executed"], True)
+        self.assertIs(lit["selected"], True)
+        for absent in ("unverified", "otherJob", "planted"):
+            self.assertIs(probe[absent][0]["executed"], False, absent)
+        # The action reads as a removal and a cell, never as a planting.
+        self.assertEqual(probe["selected"]["actionLabel"], "铲除")
+        self.assertIsNone(probe["selected"]["typeLabel"])
+        self.assertEqual(probe["selected"]["cellText"], "R3 C4")
+        self.assertEqual(probe["selected"]["executed"]["actionLabel"], "铲除")
+
     def test_state_page_profile_selection_drives_request_label_and_copy_payload(self):
         script = r'''const fs = require("node:fs");
 const vm = require("node:vm");

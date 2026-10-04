@@ -25,6 +25,7 @@ from jev.questions import (
     COLLECT_TARGET_QUESTION_ID,
     DISCARD_OPTION_ID,
     PLANT_TARGET_QUESTION_ID,
+    SHOVEL_TARGET_QUESTION_ID,
 )
 from jev.loop import (
     API_RETRY_BASE_SECONDS,
@@ -76,6 +77,22 @@ SUNFLOWER_CARD = {
     "type_code": 1,
     "type_name": "sunflower",
     "cost": 50,
+    "cooldown_ready": True,
+    "usable": True,
+}
+SNOW_PEA_CARD = {
+    "slot": 2,
+    "type_code": 5,
+    "type_name": "snow_pea",
+    "cost": 175,
+    "cooldown_ready": True,
+    "usable": True,
+}
+MELON_PULT_CARD = {
+    "slot": 3,
+    "type_code": 39,
+    "type_name": "melon_pult",
+    "cost": 300,
     "cooldown_ready": True,
     "usable": True,
 }
@@ -183,6 +200,54 @@ def boundary_result(request: Mapping[str, Any], status: str = "success") -> Acti
         finished_at_utc="2026-09-27T00:00:00.100Z",
         elapsed_ms=100,
     )
+
+
+def removal_all_state(
+    sequence: int,
+    *,
+    occupied: tuple[int, int] = (2, 3),
+    plantable: bool = True,
+    sun: int = 100,
+    cards: list | None = None,
+) -> dict[str, Any]:
+    """An All State whose raw board cell the Boundary can prove is occupied.
+
+    The raw occupied cell is the plant entity the projection compacts into
+    ``plant:peashooter``; ``plantable=False`` leaves every other cell
+    un-plantable, so the plant branch has a removable cell and no placement
+    candidate. The availability set is the one the real capture publishes, without
+    which the proposal is discarded as unprovable before the Boundary.
+    """
+    row, col = occupied
+    cells: list[list[Any]] = [[None] * 9 for _ in range(5)]
+    cells[row][col] = {
+        "type_code": PEASHOOTER_CARD["type_code"],
+        "type_name": PEASHOOTER_CARD["type_name"],
+    }
+    state = all_state(
+        sequence,
+        sun=sun,
+        cards=cards,
+        cells=cells,
+        plantability=[[plantable] * 9 for _ in range(5)],
+    )
+    state["plants"] = [
+        {
+            "type_code": PEASHOOTER_CARD["type_code"],
+            "type_name": PEASHOOTER_CARD["type_name"],
+            "row": row,
+            "col": col,
+            "hp": 300,
+        }
+    ]
+    state["availability"] = {
+        "board.occupancy": "provisional",
+        "plants": "available",
+        "cards": "available",
+        "items": "available",
+        "items.position": "available",
+    }
+    return state
 
 
 class FakeBoundary:
@@ -1513,6 +1578,77 @@ class RuntimeCase(unittest.IsolatedAsyncioTestCase):
         await self.wait_until(lambda: len(self.client.calls) == 1)
         await self.stop()
 
+    # ---------------------------------------------------- removal (CD-08/CD-09)
+
+    async def test_a_selected_removal_dispatches_one_shovel_cell_and_records_its_action(self):
+        state = removal_all_state(1, plantable=False, cards=[PEASHOOTER_CARD])
+        await self.start(capture=ScriptedCapture([state]), client=FakeAsyncClient(branch_responder()))
+        await self.wait_until(lambda: self.action_records("executed"))
+        self.assertEqual(self.boundary.actions(), ["shovel_cell"])
+        self.assertEqual((self.boundary.requests[0]["row"], self.boundary.requests[0]["col"]), (2, 3))
+        # A board with no plantable cell asks the removal layer alone, in one request.
+        self.assertEqual(self.client.calls_of("plant")[0]["questions"], (SHOVEL_TARGET_QUESTION_ID,))
+        self.assertEqual(self.loop._last_result["action"], "shovel_cell")
+        self.assertIsNone(self.loop._last_result["type_name"])
+        self.assertEqual((self.loop._last_result["row"], self.loop._last_result["col"]), (2, 3))
+        await self.stop()
+
+    async def test_two_selected_layers_dispatch_only_the_removal_and_record_the_drop(self):
+        state = removal_all_state(1, plantable=True, cards=[PEASHOOTER_CARD])
+        await self.start(capture=ScriptedCapture([state]), client=FakeAsyncClient(branch_responder()))
+        await self.wait_until(lambda: self.action_records("executed"))
+        self.assertEqual(self.boundary.actions(), ["shovel_cell"])
+        self.assertEqual(
+            set(self.client.calls_of("plant")[0]["questions"]),
+            {PLANT_TARGET_QUESTION_ID, SHOVEL_TARGET_QUESTION_ID},
+        )
+        decisions = [
+            record.action
+            for record in self.records
+            if record.branch == "plant" and record.action is not None
+        ]
+        merge = decisions[0].answers["merge"]
+        self.assertIs(merge["shovel_selected"], True)
+        self.assertIs(merge["shovel_overrode_placement"], True)
+        self.assertEqual(merge["overridden_placement_option"], "peashooter@r0c0")
+        await self.stop()
+
+    async def test_local_wait_reason_asks_whenever_a_placement_or_a_removal_exists(self):
+        from jev.loop import BRANCH_PLANT
+        from jev.strategy import evaluate_strategy
+        from state.projection import project_jev_state
+
+        def reason(loop: JevRuntimeLoop, raw: Mapping[str, Any]) -> str | None:
+            jev_state = project_jev_state(raw)
+            return loop._local_wait_reason(
+                BRANCH_PLANT, jev_state, evaluate_strategy(jev_state), raw
+            )
+
+        loop = JevRuntimeLoop(client=FakeAsyncClient(), boundary=FakeBoundary())
+        # No plantable cell and no removable cell: the pre-existing conclusion stands.
+        blocked = all_state(1, sun=100, cards=[PEASHOOTER_CARD], plantability=[[False] * 9 for _ in range(5)])
+        self.assertEqual(reason(loop, blocked), "no_target")
+        unaffordable = dispatchable_all_state(1, sun=25, cards=[PEASHOOTER_CARD])
+        self.assertEqual(reason(loop, unaffordable), "await_resource")
+        cooling = dispatchable_all_state(
+            1, sun=100, cards=[{**PEASHOOTER_CARD, "cooldown_ready": False}]
+        )
+        self.assertEqual(reason(loop, cooling), "await_cooldown")
+        removable = removal_all_state(1, plantable=False, sun=25, cards=[PEASHOOTER_CARD])
+        self.assertIsNone(reason(loop, removable))
+
+        class SharedAsyncClient(FakeAsyncClient):
+            """Its ``decide_shared`` presence alone marks the saving runtime; it sends nothing."""
+
+            async def decide_shared(self, *_args, **_kwargs):
+                raise AssertionError("a saving branch must not send a request")
+
+        saving = JevRuntimeLoop(client=SharedAsyncClient(), boundary=FakeBoundary())
+        saving._intent = {"type_name": "snow_pea"}
+        declared = removal_all_state(1, plantable=False, sun=25, cards=[SNOW_PEA_CARD])
+        # CD-09: an unpayable declared goal still outranks a removable cell.
+        self.assertEqual(reason(saving, declared), "await_plan")
+
 
 class JevRuntimeLoopSyncTests(unittest.TestCase):
     def test_run_keeps_a_synchronous_entry_point(self):
@@ -1762,7 +1898,10 @@ class ManagementAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         source = self.loop._store.publish(replace(self.source, all_state=raw, jev_state=project_jev_state(raw)))
         self.source = source
         await self.submit(self.decision(type_name="peashooter", affirmative=False))
-        self.assertEqual(self.loop._local_wait_reason("plant", source.jev_state, evaluate_strategy(source.jev_state), raw), "await_resource")
+        self.assertEqual(self.loop._intent["type_name"], "peashooter")
+        # Case A: the declared goal still needs 25 sun and no lane is close, so the
+        # branch keeps saving instead of spending the 75 on a cheaper plant.
+        self.assertEqual(self.loop._local_wait_reason("plant", source.jev_state, evaluate_strategy(source.jev_state), raw), "await_plan")
         self.assertEqual(self.boundary.requests, [])
         old_key = self.loop._branch_key("collect", source)
         raw = deepcopy(raw); raw["sun_balance"] = 100
@@ -1773,6 +1912,93 @@ class ManagementAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.loop._intent["type_name"], "sunflower")
         await self.submit(self.decision(operation="cancel", affirmative=False))
         self.assertIsNone(self.loop._intent)
+
+    async def test_case_a_a_goal_above_the_balance_saves_and_then_reopens_on_payment(self):
+        from dataclasses import replace
+        from jev.strategy import build_plant_candidates, evaluate_strategy
+        from state.projection import project_jev_state
+        self.setup_runtime()
+        raw = deepcopy(self.source.all_state)
+        raw["cards"] = [SUNFLOWER_CARD, PEASHOOTER_CARD, MELON_PULT_CARD]
+        raw["sun_balance"] = 150
+        source = self.loop._store.publish(replace(self.source, all_state=raw, jev_state=project_jev_state(raw)))
+        self.source = source
+        await self.submit(self.decision(type_name="melon_pult", affirmative=False))
+        self.assertEqual(self.loop._intent["type_name"], "melon_pult")
+        signals = evaluate_strategy(source.jev_state)
+        self.assertEqual(self.loop._local_wait_reason("plant", source.jev_state, signals, raw), "await_plan")
+        self.assertEqual(build_plant_candidates(source.jev_state, signals, plan=self.loop._intent), [])
+        self.assertEqual(self.boundary.requests, [])
+        for sun, expected in ((150, set()), (320, {"melon_pult"}), (400, {"melon_pult", "sunflower", "peashooter"})):
+            raw = deepcopy(raw); raw["sun_balance"] = sun
+            sample = replace(source, all_state=raw, jev_state=project_jev_state(raw))
+            offered = {
+                entry["type_name"]
+                for entry in build_plant_candidates(sample.jev_state, evaluate_strategy(sample.jev_state), plan=self.loop._intent)
+            }
+            self.assertEqual(offered, expected, sun)
+
+    async def test_a_lane_that_cannot_stop_what_is_in_it_overrides_the_save(self):
+        from dataclasses import replace
+        from jev.strategy import build_plant_candidates, evaluate_strategy
+        from state.projection import project_jev_state
+        self.setup_runtime()
+        raw = deepcopy(self.source.all_state)
+        raw["cards"] = [SUNFLOWER_CARD, PEASHOOTER_CARD, MELON_PULT_CARD]
+        raw["sun_balance"] = 150
+        raw["zombies"] = [
+            {"type_code": 0, "type_name": "normal_zombie", "row": 0, "distance_to_house_cells": 2}
+        ]
+        source = self.loop._store.publish(replace(self.source, all_state=raw, jev_state=project_jev_state(raw)))
+        self.source = source
+        await self.submit(self.decision(type_name="melon_pult", affirmative=False))
+        signals = evaluate_strategy(source.jev_state)
+        self.assertEqual(signals.rows[0].urgency, "high")
+        self.assertIsNone(self.loop._local_wait_reason("plant", source.jev_state, signals, raw))
+        self.assertEqual(
+            {entry["type_name"] for entry in build_plant_candidates(source.jev_state, signals, plan=self.loop._intent)},
+            {"sunflower", "peashooter"},
+        )
+
+    async def test_case_b_an_abundant_balance_offers_the_high_cost_hand_under_a_cheap_goal(self):
+        from dataclasses import replace
+        from jev.strategy import evaluate_strategy
+        from state.projection import project_jev_state
+        self.setup_runtime()
+        raw = deepcopy(self.source.all_state)
+        raw["cards"] = [SUNFLOWER_CARD, PEASHOOTER_CARD, SNOW_PEA_CARD, MELON_PULT_CARD]
+        raw["sun_balance"] = 8175
+        source = self.loop._store.publish(replace(self.source, all_state=raw, jev_state=project_jev_state(raw)))
+        self.source = source
+        await self.submit(self.decision(type_name="sunflower", affirmative=False))
+        self.assertEqual(self.loop._intent["type_name"], "sunflower")
+        signals = evaluate_strategy(source.jev_state)
+        self.assertIsNone(self.loop._local_wait_reason("plant", source.jev_state, signals, raw))
+        questions = build_plant_questions(source.jev_state, signals=signals, plan=self.loop._intent).questions
+        self.assertIn("melon_pult@r0c0", questions[PLANT_TARGET_QUESTION_ID].criteria)
+        self.assertIn("snow_pea@r0c0", questions[PLANT_TARGET_QUESTION_ID].criteria)
+
+    async def test_a_target_outside_the_declared_goal_is_context_not_a_conflict(self):
+        from dataclasses import replace
+        from jev.strategy import evaluate_strategy
+        from state.projection import project_jev_state
+        self.setup_runtime()
+        raw = deepcopy(self.source.all_state)
+        raw["cards"] = [SUNFLOWER_CARD, MELON_PULT_CARD]
+        raw["sun_balance"] = 500
+        self.source = self.loop._store.publish(replace(self.source, all_state=raw, jev_state=project_jev_state(raw)))
+        self.loop._intent = {"type_name": "sunflower"}
+        decision = replace(
+            self.decision(),
+            intent="plant",
+            effective_action="plant",
+            target={"action": "place_plant", "type_name": "melon_pult", "row": 0, "col": 0},
+            source_intent_version=0,
+            source_intent=dict(self.loop._intent),
+        )
+        self.loop._propose("plant", self.source, (), evaluate_strategy(self.source.jev_state), decision, "2026-09-27T00:00:00Z")
+        await self.loop._dispatch(self.loop._scheduler, self.source)
+        self.assertEqual([request["action"] for request in self.boundary.requests], ["place_plant"])
 
     async def test_epoch_changed_shared_result_cannot_authorize_any_input(self):
         self.setup_runtime()

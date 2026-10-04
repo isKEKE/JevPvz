@@ -27,6 +27,7 @@ from .config import (
     DEFAULT_NOUL_CANDIDATE_THRESHOLD,
     DEFAULT_ROUTER_CONFIDENCE_THRESHOLD,
 )
+from .strategy import card_costs, card_price_band
 
 # --------------------------------------------------------------- thresholds
 
@@ -98,6 +99,9 @@ PLANT_LANE_QUESTION_ID = "plant_target_lane"
 PLANT_LANE_OPTION_PREFIX = "lane_"
 PLANT_LANE_TARGET_QUESTION_PREFIX = "plant_target_lane_"
 
+SHOVEL_TARGET_QUESTION_ID = "shovel_target"
+"""The removal Choice of the plant request (CD-08): which occupied cell to clear."""
+
 COLLECT_NOW_QUESTION_ID = "should_collect_now"
 COLLECT_TARGET_QUESTION_ID = "collect_target"
 
@@ -107,7 +111,7 @@ PLANT_ROW_QUESTION_IDS: tuple[str, ...] = tuple(
 
 # ---------------------------------------------------------------- state keys
 
-PLANT_STATE_FIELDS: tuple[str, ...] = ("sun", "cards", "plant_counts", "lane_composition", "board", "plants", "zombies", "waves", "observed_lanes", "catalog_context")
+PLANT_STATE_FIELDS: tuple[str, ...] = ("sun", "cards", "economy", "plant_counts", "lane_composition", "board", "plants", "zombies", "waves", "observed_lanes", "catalog_context")
 COLLECT_STATE_FIELDS: tuple[str, ...] = (*PLANT_STATE_FIELDS, "items")
 
 
@@ -239,6 +243,25 @@ enumeration).
 """
 
 
+ECONOMY_ANCHOR = (
+    "state.economy is the resource fact of this decision: band compares state.sun with the prices in "
+    "hand (scarce = below every price in hand, normal = below the middle price, comfortable = below the "
+    "highest price, abundant = at or above the highest price), plan is the next construction you already "
+    "declared with its cost and the sun it still needs, and sun_above_plan is what is left once that plan "
+    "is paid for. While plan still needs sun the placements offered are limited to it; once it is payable "
+    "they are that plan's placements together with every other placement sun_above_plan can pay for, so a "
+    "large balance does not narrow the choice by itself. Choosing the discard option is how you keep "
+    "saving for a plan you cannot pay for yet."
+)
+"""Fixed economy anchor appended to every plant instructions text.
+
+It only states the semantics of the resource facts the runtime already computes
+(balance band against this hand's own prices, the declared plan and its price, and
+that plan's own surplus) and how the offered set follows from them. It names no
+sun number, no plant, and no build order, and it never ranks the options.
+"""
+
+
 def _plant_layout_guidance() -> str:
     """The shared layout paragraph appended after every plant instructions text.
 
@@ -247,6 +270,16 @@ def _plant_layout_guidance() -> str:
     missing or empty file degrades to the anchor sentence alone.
     """
     return " " + " ".join((PLANT_LAYOUT_ANCHOR, *load_plant_experience()))
+
+
+def _plant_economy_guidance() -> str:
+    """The fixed economy paragraph appended to every plant instructions text.
+
+    It states the resource facts and the offer rule that follows from them, so a
+    declared goal is readable in the question itself instead of having to be
+    inferred from a changing candidate list.
+    """
+    return " " + ECONOMY_ANCHOR
 
 
 def plant_target_question(criteria: Mapping[str, Any]) -> Choice:
@@ -260,6 +293,7 @@ def plant_target_question(criteria: Mapping[str, Any]) -> Choice:
             "of the same lane number in state.observed_lanes. Compare the offered placements with each other only; "
             "do not count, and do not name anything that is not offered."
             + _plant_layout_guidance()
+            + _plant_economy_guidance()
         ),
         criteria=dict(criteria),
     )
@@ -274,6 +308,7 @@ def plant_lane_question(criteria: Mapping[str, Any]) -> Choice:
             "and that lane's facts are the entry of the same lane number in state.observed_lanes. The complete list "
             "of placements inside each lane is asked as a separate question."
             + _plant_layout_guidance()
+            + _plant_economy_guidance()
         ),
         criteria=dict(criteria),
     )
@@ -289,6 +324,31 @@ def plant_lane_target_question(row: int, criteria: Mapping[str, Any]) -> Choice:
             f"lane {row}'s facts are state.observed_lanes[{row}]. Compare the offered placements with each other only; "
             "do not count, and do not name anything that is not offered."
             + _plant_layout_guidance()
+            + _plant_economy_guidance()
+        ),
+        criteria=dict(criteria),
+    )
+
+
+def shovel_target_question(criteria: Mapping[str, Any]) -> Choice:
+    """Relative choice over every removable occupied cell plus the discard option.
+
+    One action per decision is enforced by the code merge, not by this text: the
+    options state each cell's own row, column, plant type and catalog role, and the
+    question never says which cell to clear or in what order. The executor removes
+    one plant in the chosen cell and guarantees no specific entity of a stacked
+    cell, so the text promises exactly that and nothing more.
+    """
+    return Choice(
+        instructions=(
+            "Choose exactly one occupied board cell to clear, or choose "
+            f"{DISCARD_OPTION_ID} when none of them is the right move now. Every option names one "
+            "occupied cell by its zero-based row and column, the plant type the board reports there, "
+            "and that type's catalog role when it resolves; removing a cell removes one plant in "
+            "that cell, and no option selects one specific entity of a stacked cell. Compare the "
+            "offered cells with each other only; do not count, and do not name anything that is not "
+            "offered."
+            + _plant_economy_guidance()
         ),
         criteria=dict(criteria),
     )
@@ -312,6 +372,11 @@ def collect_target_question(criteria: Mapping[str, Any]) -> Choice:
 
 def plant_option_id(type_name: str, row: int, col: int) -> str:
     return f"{type_name}@r{row}c{col}"
+
+
+def shovel_option_id(row: int, col: int) -> str:
+    """The option id of one removable occupied cell (``remove@r<row>c<col>``)."""
+    return f"remove@r{row}c{col}"
 
 
 def plant_lane_option_id(row: int) -> str:
@@ -353,6 +418,25 @@ def plant_option_criteria(
         "role": role,
         "plant_ability": description_en or "unknown: this type has no local ability text",
         "engagement": engagement,
+    }
+
+
+def shovel_option_criteria(*, type_name: str, row: int, col: int, role: str | None) -> dict[str, Any]:
+    """One removal option: which cell, which plant type, and that type's role.
+
+    Facts only: the cell's zero-based row and column, the type name the board
+    reports for it, and the catalog role when it resolves (``None`` when it does
+    not). Nothing states that the cell should be cleared or cleared first.
+    """
+    return {
+        "what": (
+            f"Remove the {type_name.replace('_', ' ')} the board reports in the occupied cell at "
+            f"zero-based row {row}, column {col}."
+        ),
+        "type_name": type_name,
+        "lane": row,
+        "column": col,
+        "role": role,
     }
 
 
@@ -420,6 +504,7 @@ __all__ = [
     "QuestionSpec",
     "ROUTER_CONFIDENCE_THRESHOLD",
     "ROW_COUNT",
+    "SHOVEL_TARGET_QUESTION_ID",
     "collect_now_question",
     "collect_option_criteria",
     "collect_option_id",
@@ -438,6 +523,9 @@ __all__ = [
     "plant_target_options",
     "plant_target_question",
     "question_summary",
+    "shovel_option_criteria",
+    "shovel_option_id",
+    "shovel_target_question",
 ]
 
 
@@ -445,15 +533,21 @@ MANAGEMENT_INTENT_QUESTION_ID = "construction_intent"
 MANAGEMENT_TYPE_QUESTION_ID = "next_construction_type"
 
 
-def _construction_option_text(card: Mapping[str, Any]) -> str:
-    """One construction-type option: the card's own catalog facts, nothing more."""
+def _construction_option_text(card: Mapping[str, Any], costs: tuple[int, ...] = ()) -> str:
+    """One construction-type option: the card's own catalog facts, nothing more.
+
+    ``costs`` is the hand's own price ladder, used only for the comparative
+    ``low``/``mid``/``high`` price position (a fact about this hand, not a build
+    order). No recommendation is added.
+    """
     parts = [f"Build {card.get('type_name')}"]
     ability = card.get("description_en")
     if isinstance(ability, str) and ability.strip():
         parts.append(ability.strip())
     cost = card.get("cost")
     if type(cost) is int:
-        parts.append(f"cost {cost}")
+        position = card_price_band(cost, costs)
+        parts.append(f"cost {cost} ({position} price in hand)" if position else f"cost {cost}")
     shortfall = card.get("shortfall")
     if card.get("payable") is True:
         parts.append("payable now")
@@ -462,27 +556,46 @@ def _construction_option_text(card: Mapping[str, Any]) -> str:
     return " — ".join(parts) + "."
 
 
-def management_questions(cards: tuple[Mapping[str, Any], ...]) -> dict[str, Any]:
+def management_questions(
+    cards: tuple[Mapping[str, Any], ...],
+    *,
+    economy: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """The context-only construction intent/type questions (OD-43).
 
     Every construction-type option repeats the facts the shared state already
-    carries for that card -- its catalog ability text, its cost and its current
-    payment fact -- so the type can be chosen without cross-referencing the card
-    list and an unfamiliar (for example modded) plant is never mistaken for a
-    known one. No line-up, quota, or recommendation is supplied.
+    carries for that card -- its catalog ability text, its cost, its comparative
+    price position in the current hand and its current payment fact -- so the type
+    can be chosen without cross-referencing the card list and an unfamiliar (for
+    example modded) plant is never mistaken for a known one. No line-up, quota, or
+    recommendation is supplied.
+
+    ``economy`` is the same resource fact group the shared state carries. When it
+    is present the intent question also states what the declared goal does to the
+    planting branch (keep saving while it still needs sun, offer it first once
+    payable), so nothing about the offered set has to be guessed from a changing
+    list.
 
     There is no urgency Noul: the removed immediate-response signal had no
     consumer, and the model's own discard option now owns the act/wait decision.
     """
+    costs = card_costs(cards)
     options: dict[str, str] = {}
     for card in cards:
         if not isinstance(card, Mapping):
             continue
         name = card.get("type_name")
         if isinstance(name, str) and name:
-            options[name] = _construction_option_text(card)
+            options[name] = _construction_option_text(card, costs)
     options[DISCARD_OPTION_ID] = "No construction type."
+    goal = "your current next construction goal using observed facts"
+    if isinstance(economy, Mapping):
+        goal += (
+            ". state.economy.plan is that goal with its cost and the sun it still needs: while it still "
+            "needs sun the planting branch keeps saving for it, and once it is payable that branch offers "
+            "it first"
+        )
     return {
-        MANAGEMENT_INTENT_QUESTION_ID: Choice(instructions="Choose whether to keep, replace, or cancel your current next construction intent using observed facts.", criteria={"keep": "Keep current construction intent.", "replace": "Choose new construction type.", "cancel": "Cancel construction for now."}),
-        MANAGEMENT_TYPE_QUESTION_ID: Choice(instructions="Choose your next construction type. Every option states that type's catalog ability, its cost and its current payment fact; you may wait for an unaffordable one. No prescribed lineup or layout is supplied.", criteria=options),
+        MANAGEMENT_INTENT_QUESTION_ID: Choice(instructions=f"Choose whether to keep, replace, or cancel {goal}.", criteria={"keep": "Keep current construction intent.", "replace": "Choose new construction type.", "cancel": "Cancel construction for now."}),
+        MANAGEMENT_TYPE_QUESTION_ID: Choice(instructions="Choose your next construction type. Every option states that type's catalog ability, its cost, its price position in the current hand and its current payment fact; you may wait for an unaffordable one. No prescribed lineup or layout is supplied.", criteria=options),
     }

@@ -66,9 +66,12 @@
   /* ------------------------------------------------------------ options --- */
 
   const CELL_OPTION = /^([^@\s]+)@r(\d+)c(\d+)$/;
+  const SHOVEL_OPTION = /^remove@r(\d+)c(\d+)$/;
   const LANE_OPTION = /^lane_(\d+)$/;
-  /** 空间问题：选项自带 row/col，构成 5×9 决策场的格点。 */
-  const SPATIAL_QUESTION = /^(plant_target|plant_target_lane_\d+|collect_target)$/;
+  /** 空间问题：选项自带 row/col，构成 5×9 决策场的格点。铲除层问的也是“哪一格”，
+   * 所以与放置层同场呈现，不另开图层。 */
+  const SPATIAL_QUESTION = /^(plant_target|plant_target_lane_\d+|shovel_target|collect_target)$/;
+  const SHOVEL_TARGET_QUESTION = "shovel_target";
   /** 候选轨问题按“最能体现三路选择”的顺序。 */
   const RAIL_PRIORITY = ["construction_intent", "next_construction_type", "plant_target_lane", "should_collect_now"];
   const QUESTION_LABELS = {
@@ -85,7 +88,7 @@
     none_of_the_above: "以上都不是", true: "收集", false: "暂不收集",
     wait: "等待", collect: "收集阳光", plant: "种植", shovel: "铲除",
   };
-  const ACTION_ZH = { place_plant: "种植", collect_item: "收集掉落物", collect_sun: "收集阳光", shovel: "铲除", wait: "等待" };
+  const ACTION_ZH = { place_plant: "种植", collect_item: "收集掉落物", collect_sun: "收集阳光", shovel: "铲除", shovel_cell: "铲除", wait: "等待" };
   const STAGE_ZH = { "plant-decision": "种植决策", "collect-decision": "收集决策", "manage-decision": "经营决策" };
   const STATUS_ZH = { selected: "已选定", model_wait: "模型等待", ok: "已选定", wait: "等待" };
   const FALLBACK_ZH = {
@@ -343,22 +346,40 @@
 
   /**
    * 哪一条空间问题才是真正拍板的那条：
-   *   1. 直接问全局格点的 plant_target 一定权威；
-   *   2. 否则若 plant_target_lane 选了 lane_N，则只有 plant_target_lane_N 权威。
+   *   1. 这次决策真的下发了铲除时，铲除层拍板（铲除优先于同一次请求里的放置）；
+   *   2. 否则直接问全局格点的 plant_target 一定权威；
+   *   3. 再否则若 plant_target_lane 选了 lane_N，则只有 plant_target_lane_N 权威；
+   *   4. 只有铲除层而没有放置层时（放置层为空），铲除层就是唯一的拍板问题。
    * 其余空间问题只提供概率点，不得点亮“已选中”，否则一次决策会同时出现多个选中格。
    */
-  function pickAuthoritativeQuestion(groups) {
+  function pickAuthoritativeQuestion(groups, decision) {
+    const hasShovel = groups.some((group) => group.questionId === SHOVEL_TARGET_QUESTION);
+    const decidedShovel = Boolean(decision && decision.target && decision.target.action === "shovel_cell");
+    if (hasShovel && decidedShovel) return SHOVEL_TARGET_QUESTION;
     if (groups.some((group) => group.questionId === "plant_target")) return "plant_target";
     const lane = groups.find((group) => group.questionId === "plant_target_lane"
       && LANE_OPTION.test(String(group.choice || "")));
     if (lane) return `plant_target_lane_${Number(LANE_OPTION.exec(lane.choice)[1])}`;
-    return null;
+    return hasShovel ? SHOVEL_TARGET_QUESTION : null;
   }
 
-  /** Decision Field = 与草坪同构的 5×9 格点，每格一票“种在这里”。 */
-  function buildField(groups, authoritative) {
+  /**
+   * 同一次成功铲除的执行事实：只有同一 action_result 的边界状态为 success、动作为
+   * shovel_cell，且行列精确一致时才算证明。失败、未证实、旧 job 的铲除都不点亮。
+   */
+  function shovelExecution(execution) {
+    if (!execution || execution.boundary_status !== "success") return null;
+    const target = execution.target;
+    if (!target || target.action !== "shovel_cell") return null;
+    if (!Number.isInteger(target.row) || !Number.isInteger(target.col)) return null;
+    return { row: target.row, col: target.col };
+  }
+
+  /** Decision Field = 与草坪同构的 5×9 格点，每格一票“种在这里”或“铲这里”。 */
+  function buildField(groups, authoritative, execution) {
     const byCell = new Map();
     const sources = [];
+    const shovelProof = shovelExecution(execution);
     for (const group of groups) {
       if (!SPATIAL_QUESTION.test(group.questionId)) continue;
       if (!group.options.length) continue;
@@ -367,6 +388,7 @@
       for (const option of group.options) {
         const cell = parseCellOption(option.optionId);
         if (!cell) continue;
+        const shovel = SHOVEL_OPTION.test(option.optionId);
         const key = `${cell.row}:${cell.col}`;
         const existing = byCell.get(key);
         const selected = authoritativeGroup && group.choice === option.optionId;
@@ -374,14 +396,19 @@
           || (selected && !existing.selected)
           || (selected === existing.selected && (option.probability ?? -1) > (existing.probability ?? -1));
         if (!better) continue;
+        // 铲除的已执行标记与服务器对放置层同规：同一 job、边界 success、目标精确映射；
+        // 铲除格读作铲除，不冒充植物。
+        const shovelExecuted = shovel && shovelProof !== null
+          && execution.job_id === group.jobId
+          && shovelProof.row === cell.row && shovelProof.col === cell.col;
         byCell.set(key, {
           row: cell.row,
           col: cell.col,
           optionId: option.optionId,
-          typeLabel: localizedType("plant", null, cell.type),
+          typeLabel: shovel ? ACTION_ZH.shovel_cell : localizedType("plant", null, cell.type),
           probability: option.probability,
           selected,
-          executed: option.executed,
+          executed: option.executed === true || shovelExecuted,
         });
       }
     }
@@ -459,11 +486,19 @@
     const fieldBranch = fieldGroups.length ? fieldGroups[0].branchId : null;
     // 权威问题可能本身不是空间问题（plant_target_lane 只选行），所以必须在
     // 同一个 job 的**全部**问题里判定，而不是只在空间子集里找。
+    // 权威问题可能本身不是空间问题（plant_target_lane 只选行），所以必须在
+    // 同一个 job 的**全部**问题里判定，而不是只在空间子集里找。
     const fieldJobRank = fieldJobId === null ? null : jobRank(fieldJobId);
-    const authoritative = pickAuthoritativeQuestion(
-      fieldJobRank === null ? [] : groups.filter((group) => jobRank(group.jobId) === fieldJobRank),
-    );
-    const field = buildField(fieldGroups, authoritative);
+    const fieldJobGroups = fieldJobRank === null ? [] : groups.filter((group) => jobRank(group.jobId) === fieldJobRank);
+    // 决策与执行摘要只对同一 job 的格点场有效：旧 job 的铲除不得点亮当前格点。
+    const latestDecision = (payload && payload.decision) || null;
+    const latestExecution = (payload && payload.execution) || null;
+    const fieldDecision = latestDecision && fieldJobId !== null && latestDecision.job_id === fieldJobId
+      ? latestDecision : null;
+    const fieldExecution = latestExecution && fieldJobId !== null && latestExecution.job_id === fieldJobId
+      ? latestExecution : null;
+    const authoritative = pickAuthoritativeQuestion(fieldJobGroups, fieldDecision);
+    const field = buildField(fieldJobGroups, authoritative, fieldExecution);
     const rails = buildRails(current);
     const selected = buildSelected(payload && payload.decision, payload && payload.execution);
     /*

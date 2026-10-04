@@ -493,14 +493,16 @@
       box.append(actionRows([["STATUS", "PENDING", "is-pending"]]));
       return;
     }
-    // 种植、收集、等待三种动作的“名字”与“目标”含义不同，分开拼。
+    // 种植、铲除两种“格上动作”的“名字”与“目标”含义不同：目标都是那个格，
+    // 只是动作不同；铲除不得显示成种植。收集/等待没有格点，按原样拼。
     const isPlant = Boolean(selected.cellText && selected.typeLabel);
+    const isShovel = selected.actionLabel === "铲除";
     const isIdle = !selected.actionLabel || selected.actionLabel === "等待";
     const name = isIdle ? dash(selected.actionLabel || "等待")
       : isPlant ? `${selected.actionLabel}${selected.typeLabel}` : dash(selected.actionLabel || selected.intentLabel);
     const nameClass = isIdle ? "is-idle"
       : isPlant ? "is-plant"
-        : (selected.actionLabel === "铲除" ? "is-shovel" : "is-collect");
+        : (isShovel ? "is-shovel" : "is-collect");
     box.append(el("span", `action-name ${nameClass}`, name));
 
     const executed = selected.executed;
@@ -508,7 +510,8 @@
       ? (BOUNDARY_LABELS[executed.boundaryStatus] || [String(executed.boundaryStatus).toUpperCase(), "is-pending"])
       : ["PENDING", "is-pending"];
     const targetText = isPlant ? selected.cellText
-      : (executed && executed.typeLabel ? executed.typeLabel : "—");
+      : (isShovel && selected.cellText ? selected.cellText
+        : (executed && executed.typeLabel ? executed.typeLabel : "—"));
     const rows = [
       ["TARGET", targetText],
       ["STATUS", status[0], status[1]],

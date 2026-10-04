@@ -74,6 +74,12 @@ Replace the example `item_id` with an ID from the current State. The result `sta
 uv run python -m unittest discover -s tests -p "test_*.py"
 ```
 
+Offline replay of a frozen schema-2 Trace: it rebuilds one plant decision and contrasts the removed "goal types only" rule with the current "goal plus surplus" rule. Read-only; no model call and no game access.
+
+```powershell
+uv run python tools/evidence-plan-economy.py --trace-file .log/jev-dashboard.jsonl
+```
+
 - [JEV capability report](docs/jev-capability-analysis.en.md): findings and limits of the live-game experiment; recommended first read.
 - [Detailed usage guide (Chinese)](docs/usage.md): State observation, dashboard, actions, JEV, Python API, and live validation.
 - [Architecture](docs/architecture.md): module responsibilities, State contract, and runtime.
